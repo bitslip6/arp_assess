@@ -1,0 +1,87 @@
+<html>
+<head>
+  <link rel="stylesheet" href="/home/cory/dev/dnswatch/alch-0.4.1/alchemy.min.css"/>
+<style>
+
+      circle {
+          fill: white;
+          fill-opacity: .5;
+          stroke-width: 3;
+          stroke-opacity: 1;
+          stroke: black;
+      }
+
+      circle.root {
+          stroke-width: 5;
+          fill: lightblue;
+          fill-opacity: 1;
+      }
+
+      circle.award {
+          stroke: yellow;
+          stroke-width: 1;
+      }
+
+      circle.person {
+          stroke: lightblue;
+          stroke-width: 1;
+      }
+      .selected circle{
+          fill-opacity: 1;
+          stroke-width: 4;
+          stroke: lightblue;
+      }
+
+      .edge {
+          stroke-linecap: round;
+          stroke: lightblue;
+          stroke-opacity: 0.4;
+          stroke-width: 2;
+      }
+
+      .edge.NOMINATED {
+          stroke: lightblue;
+      }
+
+      .edge.RECEIVED {
+          stroke-dasharray: 10,5,2,2,2,5;
+          stroke: yellow;
+          stroke-opacity: 1;
+      }
+
+      .edge.ACTED_IN {
+          stroke: green;
+      }
+
+      .edge.selected {
+          stroke: lightblue;
+          stroke-opacity: 1;
+          stroke-dasharray: none;
+      }
+
+</style>
+</head>
+<body>
+  <div class="alchemy" id="alchemy"></div>
+
+  <script src="/home/cory/dev/dnswatch/alch-0.4.1/scripts/vendor.js"></script>
+  <script src="/home/cory/dev/dnswatch/alch-0.4.1/alchemy.min.js"></script>
+  <script type="text/javascript">
+
+    var config = {
+      dataSource: '/home/cory/dev/dnswatch/data/charlize.json',
+      forceLocked: false,
+      linkDistance: function(){ return 40; },
+
+      nodeTypes: {"type":["movie", 
+                          "award", 
+                          "person"]},
+      caption: function(node){ 
+          return node.caption; 
+      }
+    };
+
+    alchemy = new Alchemy(config)
+  </script>
+</body>
+</html>
