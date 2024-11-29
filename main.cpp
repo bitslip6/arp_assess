@@ -21,6 +21,8 @@ using json = nlohmann::json;
 
 // std::unordered_set<Node> hosts;
 std::unordered_map<Node, std::unordered_set<Edge, EdgeKeyHash>, NodeKeyHash> graph;
+std::unordered_set<std::string> malware;
+std::unordered_set<std::string> million;
 
 
 // Function to parse a single dnsmasq log line
@@ -67,6 +69,7 @@ std::optional<Edge> parseLogLine(const std::string &line) {
 
 
 // Main conversion function
+/*
 json convertGraphToJSON(const std::unordered_map<std::string, std::unordered_set<std::string>>& graph) {
     json result;
     result["comment"] = "network graph of DNS requests";
@@ -107,6 +110,7 @@ json convertGraphToJSON(const std::unordered_map<std::string, std::unordered_set
     result["edges"] = edges;
     return result;
 }
+*/
 
 // Signal handler function
 void handleSignal(int signal) {
@@ -132,6 +136,51 @@ int main() {
     } else {
         std::cout << "SIGUSR1 handler is set up. Send SIGUSR1 to this process to trigger the handler." << std::endl;
     }
+
+
+
+    // Open the file
+    std::ifstream inputFile("malware/top_domains.txt");
+    if (!inputFile.is_open()) {
+        std::cerr << "Error: Could not open file malware/top_domains.txt" << std::endl;
+        return 1;
+    }
+    // Read lines from the file and insert them into the unordered_set
+    std::string line;
+    size_t lineCount = 0;
+    while (std::getline(inputFile, line)) {
+        trim_whitespace(line);
+        million.insert(line);
+        lineCount++;
+        if (lineCount % 100000 == 0) {
+            std::cout << "Processed top domains " << lineCount << " lines." << std::endl;
+        }
+    }
+    inputFile.close();
+
+
+    // Open the file
+    std::ifstream inputFile2("malware/block.txt");
+    if (!inputFile2.is_open()) {
+        std::cerr << "Error: Could not open file malware/block.txt" << std::endl;
+        return 1;
+    }
+
+    // Read lines from the file and insert them into the unordered_set
+    lineCount = 0;
+    while (std::getline(inputFile2, line)) {
+        trim_whitespace(line);
+        malware.insert(line);
+        lineCount++;
+        if (lineCount % 100000 == 0) {
+            std::cout << "Processed malware " << lineCount << " lines." << std::endl;
+        }
+    }
+
+    inputFile2.close();
+
+
+
 
     try {
         // Malware domains (this would normally be loaded from a file or database)
