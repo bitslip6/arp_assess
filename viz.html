@@ -1,6 +1,6 @@
 <html>
 <head>
-  <link rel="stylesheet" href="/home/cory/dev/dnswatch/alch-0.4.1/alchemy.min.css"/>
+  <link rel="stylesheet" href="alch-0.4.1/alchemy.min.css"/>
 <style>
 
       circle {
@@ -64,21 +64,55 @@
 <body>
   <div class="alchemy" id="alchemy"></div>
 
-  <script src="/home/cory/dev/dnswatch/alch-0.4.1/scripts/vendor.js"></script>
-  <script src="/home/cory/dev/dnswatch/alch-0.4.1/alchemy.min.js"></script>
+  <script src="alch-0.4.1/scripts/vendor.js"></script>
+  <script src="alch-0.4.1/alchemy.min.js"></script>
   <script type="text/javascript">
 
     var config = {
-      dataSource: '/home/cory/dev/dnswatch/data/charlize.json',
-      forceLocked: false,
+      dataSource: '/server.php',
+      forceLocked: true,
       linkDistance: function(){ return 40; },
 
-      nodeTypes: {"type":["movie", 
-                          "award", 
-                          "person"]},
+      nodeTypes: {"type":["host", 
+                          "target", 
+                          "malware", 
+                          "top", 
+                          "lookup"]},
       caption: function(node){ 
           return node.caption; 
-      }
+      },
+        nodeStyle: {
+            "host": {
+                "borderColor": "grey",
+                "borderWidth": 3,
+                "color": "blue",
+                "radius": 20
+            },
+            "target": {
+                "borderColor": "grey",
+                "borderWidth": 3,
+                "color": "grey",
+                "radius": 20
+            },
+            "malware": {
+                "borderColor": "red",
+                "borderWidth": 3,
+                "color": "red",
+                "radius": 20
+            },
+            "top": {
+                "borderColor": "green",
+                "borderWidth": 3,
+                "color": "green",
+                "radius": 10
+            },
+            "lookup": {
+                "borderColor": "purple",
+                "borderWidth": 3,
+                "color": "purple",
+                "radius": 20
+            }
+        },
     };
 
     alchemy = new Alchemy(config)
