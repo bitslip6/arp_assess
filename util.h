@@ -54,3 +54,5 @@ void handleSignal(int signal);
 std::vector<std::string> split(const std::string &line, char delimiter);
 std::string generateUniqueID(const std::string& value);
 json convertGraphToJSON(const std::unordered_map<Node, std::unordered_set<Edge, EdgeKeyHash>, NodeKeyHash>& graph);
+void replace_dots_with_underscores(char* str);
+void trim_whitespace(std::string& str);
