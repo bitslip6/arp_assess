@@ -326,14 +326,17 @@ print_r($registrar_fn);
 echo "Db connected, Insert FN created\n";
 // echo "domain fn [$domain_fn]\n";
 
+$cache = [];
 while (true) {
     $message = $queue->convert($recv_fn);
-    //print_r($message);
-    //continue;
-    $domain = dump_to_db($domain_fn, $registrar_fn, $message);
-    echo "ERR: ($domain)\n";
-    sleep(1);
-    print_r($db);
+    $domain = get_domain($message['dst']);
+    if (!isset($cache[$domain])) {
+        $domain = dump_to_db($domain_fn, $registrar_fn, $message);
+
+        echo "ERR: ($domain)\n";
+        $cache[$domain] = true;
+        sleep(1);
+    }
 }
 
 
