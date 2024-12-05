@@ -2,8 +2,34 @@
 
 use ThreadFin\DB\DB;
 
+require "threadfin/core.php";
 require "threadfin/db.php";
 
+use \ThreadFin\Core\MaybeStr as MaybeStr;
+use \ThreadFin\Core\MaybeO as MaybeO;
+use \ThreadFin\Core\Maybe as Maybe;
+use function \ThreadFin\Util\panic_if as panic_if;
+use function \ThreadFin\Util\not as not;
+use function \ThreadFin\Core\partial_right as partial_right;
+use function \ThreadFin\Util\icontains as icontains;
+
+
+class Edge {
+
+    public function __construct(
+        public string $src,
+        public string $dst,
+        public int $timestamp) {
+    }
+
+    public function get_5min_bucket() : int {
+        // convert to number of seconds in a day
+        $time_in_day = $this->timestamp % 86400;
+        // get the 5 minute bucket the time stamp is in
+        $bucket = floor($time_in_day / 60 / 5);
+        return $bucket;
+    }
+}
 
 /**
  * Extract the domain name and TLD from a fully qualified domain name (FQDN).
@@ -28,46 +54,6 @@ function get_domain($fqdn) {
 }
 
 
-function get_txt_records($domain) {
-    // Perform a DNS query for TXT records
-    $records = dns_get_record($domain, DNS_TXT);
-
-    // Extract the TXT entries
-    $txtRecords = [];
-    foreach ($records as $record) {
-        if (isset($record['txt'])) {
-            $txtRecords[] = $record['txt'];
-        }
-    }
-
-    return $txtRecords;
-}
-
-
-class Whois_Info {
-    public string $city = "";
-    public int $zip = 0;
-    public string $country = "";
-    public string $as = "";
-    public string $org = "";
-    public string $arin = "";
-    public string $cidr = "";
-    public string $net = "";
-    public string $raw = "";
-    public string $created = "";
-    public string $expires = "";
-    public string $registrar = "";
-    public array $domains = [];
-
-    public function __toString()
-    {
-        return (!empty($this->raw)) 
-            ? $this->raw
-            : "Whois_Info: $this->as $this->org $this->country $this->cidr $this->net"; 
-    }
-}
-
-
 /**
  * @param resource $stream - stream to read
  * @param int $size - read block size
@@ -85,162 +71,87 @@ function read_stream($stream, $size=8192) {
 }
 
 
-/**
- * find the AS number of the remote IP
- * TODO: add remote classifier hosted on bitfire.co for difficult to classify IPs
- * @param string $remote_ip 
- * @return Whois_Info the AS number as a string or empty string
- */
-function find_whois(string $remote_ip, bool $return_raw = false): Whois_Info
-{
-    static $cache = [];
-    static $whois_servers = [
-        'whois.ripe.net' => 'RIPE',
-        'whois.arin.net' => 'ARIN',
-        'whois.apnic.net' => 'APNIC',
-        'whois.afrinic.net' => 'AFRINIC',
-        'whois.lacnic.net' => 'LACNIC'
-    ];
-
-    // this is an expensive call, make sure we don't accidentally do it twice
-    if (isset($cache[$remote_ip])) {
-        return $cache[$remote_ip];
-    }
-
-    $info = new Whois_Info();
-
-    foreach ($whois_servers as $server => $org) {
-        $write_ip_fn = ƒixr('fputs', "$remote_ip\r\n");
-        $x = MaybeStr::of(fsockopen($server, 43, $no, $str, 1))
-            ->effect($write_ip_fn)
-            ->then('read_stream');
-        $info->raw = ($return_raw) ? "" : $x;
-
-        //  pull the as number from anywhere
-        if (preg_match("/AS([0-9]+)/", $x, $matches)) {
-            $info->as = $matches[1];
-        }
-        // city is common
-        if (preg_match("/city[^:]*:\s*(.*)/i", $x, $matches)) {
-            $info->city = $matches[1];
-        }
-        // created date
-        if (preg_match("/creat[^:]*:\s*(.*)/i", $x, $matches)) {
-            $info->created = $matches[1];
-        }
-        // expired date
-        if (preg_match("/expir[^:]*:\s*(.*)/i", $x, $matches)) {
-            $info->expires = $matches[1];
-        }
-        // registrar date
-        if (preg_match("/registrar:\s*(.*)/i", $x, $matches)) {
-            $info->registrar = $matches[1];
-        }
-        // so is country
-        if (preg_match("/country[^:]*:\s*(.*)/i", $x, $matches)) {
-            $info->country = icontains($matches[1], "world")  ? "global" : $matches[1];
-        }
-        // postal is sometimes in an address field
-        if (preg_match("/postalcode[^:]*:\s*(.*)/i", $x, $matches)) {
-            $info->zip = $matches[1];
-        }
-        if (empty($info->zip) && preg_match("/address:[^:]*:.*?(\d{5})/i", $x, $matches)) {
-            $info->zip = $matches[1];
-        }
-        // pull cidr from anywhere
-        if (empty($info->cidr) && preg_match("/([0-9.:]+\/\d+)/i", $x, $matches)) {
-            $info->cidr = $matches[1];
-        }
-
-        // pull the net range
-        if (preg_match("/([\d.:]+\s+-\s+[\d.:]+)/i", $x, $matches)) {
-            $info->net = $matches[1];
-        }
-
-        // pull the org name from likely places
-        if (preg_match("/(org|descr|owner|netname)[^:]*:+\s*(.*)/i", $x, $matches)) {
-            $info->org .= $matches[1] . "\n";
-        }
-        // pull all email addresses
-        if (preg_match("/[\w_\.-]+\@(\w+\.\w+)/i", $x, $matches)) {
-            $info->domains[] = $matches[1];
-        }
-
-        if (!empty($info->as) || !empty($info->org) || !empty($info->country)) {
-            $info->arin = $org;
-            $info->domains = array_unique($info->domains);
-            $info->org = (empty($info->org)) ? join(", ", $info->domains) : $info->org;
-
-            $cache[$remote_ip] = $info;
-            return $info;
-        }
-
-        $info->org = trim($info->org);
-    }
-
-    $cache[$remote_ip] = $info;
-    return $info;
-}
-
-
-
-
-
-$db = DB::connect("127.0.0.1", 'php', 'localhost', 'arp_assess');
 
 /**
  * Example parsing function to handle a line of input
  *
  * @param string $line The input line from the pipe
  */
-function parse_line($line, array &$hosts, callable $domain_fn, callable $host_fn, callable $edge_fn) {
+//function parse_line($line, array &$hosts, callable $domain_fn, callable $host_fn, callable $edge_fn) {
+function parse_line($line) : MaybeO {
     $parts = explode(" ", $line);
 
     if (count($parts) < 8 || !str_contains($parts[4], "query[")) {
-        return;
+        return MaybeO::of(NULL);
     }
 
     $host = $parts[5];
     $domain = get_domain($host);
-    $src = $parts[5];
-    if (!isset($hosts[$domain])) {
-        $who = find_whois($domain);
-        $ip = gethostbyname($host);
-        $parts = explode(".", $domain);
-        $txt = get_txt_records($domain);
-        $full_txt = join(", ", $txt);
-        $has_google = false;
-        $has_spf = false;
-        if (str_contains($full_txt, "google-site-verification")) {
-            $has_google = true;
-        }
-        if (str_contains($full_txt, "v=spf1")) {
-            $has_spf = true;
-        }
-
-        $domain_fn(NULL, $parts[0], $parts[1], $who->created, $who->expires, $who->registrar, $has_spf, $has_google);
-        $hosts[$domain] = true;
-    }
-
+    return MaybeO::of(new Edge($host, $domain, time()));
 }
 
+$config = json_decode(file_get_contents("config.json"), true);
+panic_if(not(is_array($config)), "Unable to parse config.json, copy config.sample to config.json and configure settings.");
 
 
-// Path to the named pipe
-$pipePath = '/var/log/dnsmasq.log'; // Replace with your named pipe path
+
+
+/*
+$config = json_decode(file_get_contents("config.json"));
+panic_if(not(is_array($config)), "Unable to parse config.json, copy config.sample to config.json and update");
+*/
+
+$db = DB::connect($config['db_host'], $config['db_user'], $config['db_pass'], $config['db_name']);
+panic_if(not($db->connected()), "Unable to connect to db");
+
+
+
+    
 
 // Ensure the pipe exists and is a named pipe
-if (!file_exists($pipePath)) {
-    die("Error: The specified path is not a valid named pipe.\n");
+if (!file_exists($config['dnsmasq_log'])) {
+    echo "dnsmasq fifo does not exist " . $config['dnsmasq_log'] . "\n";
+    posix_mkfifo($config['dnsmasq_log'], 0664);
 }
 
 // Open the named pipe for reading
-$pipe = fopen($pipePath, 'r');
-if (!$pipe) {
-    die("Error: Unable to open named pipe.\n");
-}
+$pipe = fopen($config['dnsmasq_log'], 'r');
+panic_if(!$pipe, "Error: Unable to open named pipe {$config['dnsmasq_log']}.\n");
+echo "Listening for input on the named pipe: {$config['dnsmasq_log']}\n";
 
-echo "Listening for input on the named pipe: $pipePath\n";
+$queue = MaybeO::of(ftok($config['dnsmasq_log'], 'R'))->map('msg_get_queue');
+
+print_r($queue);
+
+$queue = MaybeO::of(msg_get_queue(ftok('config.json', 'R'), 0666));
+print_r($queue);
+die("\n");
+
+
+$queue_send_fn = function(Edge $edge) use ($queue) {
+    echo " send edge\n";
+    print_r($edge);
+
+    $error_code = 22;
+    $success = msg_send($queue(), 1, json_encode($edge), false, false, $error_code);
+    if (!$success) {
+        $stat = msg_stat_queue($queue());
+        echo "message send failed. number of queued messages: " . $stat['msg_qnum'];
+        echo " PID of reading process: [" . $stat['msg_lrpid'] . "]\n";
+    } else {
+        echo " EDGE SENT!\n";
+    }
+};
+
+/*
+$host = "10.80.88.102";
+$domain = "wrongdomain.com";
+$edge = MaybeO::of(new Edge($host, $domain, time()));
+print_r($edge);
+$edge->effect($queue_send_fn);
+
+die("sent edge\n");
+*/
 
 try {
     // Read the pipe line by line
@@ -248,7 +159,9 @@ try {
         $line = fgets($pipe); // Read a single line
         if ($line !== false) {
             // Pass the line to the parsing function
-            parse_line(trim($line));
+            $edge = parse_line(trim($line));
+
+            $edge->effect($queue_send_fn);
         }
     }
 } finally {
