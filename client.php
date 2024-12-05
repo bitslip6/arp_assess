@@ -42,6 +42,29 @@ class Whois_Info {
 
 
 /**
+ * Extract the domain name and TLD from a fully qualified domain name (FQDN).
+ *
+ * @param string $fqdn The fully qualified domain name.
+ * @return string The domain name and TLD (e.g., "example.com").
+ */
+function get_domain($fqdn) {
+    // Use PHP's parse_url to extract the host part if a URL is passed
+    $fqdn = parse_url($fqdn, PHP_URL_HOST) ?: $fqdn;
+
+    // Split the FQDN into parts
+    $parts = explode('.', $fqdn);
+
+    // If there are fewer than 2 parts, it is not a valid domain name
+    if (count($parts) < 2) {
+        return $fqdn; // Return as is (could be an IP or local name)
+    }
+
+    // Return the last two parts (domain and TLD)
+    return implode('.', array_slice($parts, -2));
+}
+
+
+/**
  * find the AS number of the remote IP
  * TODO: add remote classifier hosted on bitfire.co for difficult to classify IPs
  * @param string $remote_ip 
@@ -76,7 +99,12 @@ function find_whois(string $remote_ip, bool $return_raw = false): Whois_Info
             ->map($read_fn);
         $info->raw = ($return_raw) ? "" : $x();
         */
-    $x = MaybeStr::of(`whois $sanitized`);
+    $cmd = "whois $sanitized";
+    echo "[$cmd]\n";
+    $z = `whois $sanitized`;
+    echo "[$z]\n";
+    $x = MaybeStr::of($z);
+
 
         //  pull the as number from anywhere
         if (preg_match("/AS([0-9]+)/", $x(), $matches)) {
@@ -146,7 +174,8 @@ function find_whois(string $remote_ip, bool $return_raw = false): Whois_Info
         }
 
         $info->org = trim($info->org);
-    //}
+    print_r($info);
+	die("chains\n");
 
     $cache[$remote_ip] = $info;
     return $info;
@@ -201,13 +230,13 @@ function domain_age_to_score(int $seconds) : float {
 }
 
 
-function dump_to_db($domain_fn, $registrar_fn, $msg) : string {
+function dump_to_db($domain_fn, $registrar_fn, $msg) : ?string {
     //$src_host       = gethostbyaddr($msg['src']);
     $ip       = gethostbyname($msg['dst']);
-    $who      = find_whois($msg['dst']);
+    $domain   = get_domain($msg['dst']);
+    $who      = find_whois($domain);
     $parts    = explode(".", $msg['dst']);
     $len      = count($parts);
-    $domain   = (count($parts) > 1) ? $parts[$len-2] . '.' . $parts[$len-1] : $parts[$len];
     $txt      = get_txt_records($domain);
     $dkim     = get_txt_records("_dkim.$domain");
 
@@ -291,12 +320,16 @@ $db->enable_log(true);
 //public function bulk_fn(string $table, array $columns, bool $ignore_duplicate = true) : callable { 
 $domain_fn = $db->insert_fn("domain", ['id', 'domain', 'tld', 'created', 'expires', 'registrar', 'email', 'google_verify', 'score', 'cloudflare'], false);
 $registrar_fn = $db->insert_fn("registrar", ['id', 'registrat'], false);
+print_r($domain_fn);
+print_r($registrar_fn);
 
 echo "Db connected, Insert FN created\n";
 // echo "domain fn [$domain_fn]\n";
 
 while (true) {
     $message = $queue->convert($recv_fn);
+    //print_r($message);
+    //continue;
     $domain = dump_to_db($domain_fn, $registrar_fn, $message);
     echo "ERR: ($domain)\n";
     sleep(1);

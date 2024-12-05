@@ -81,13 +81,16 @@ function read_stream($stream, $size=8192) {
 function parse_line($line) : MaybeO {
     $parts = explode(" ", $line);
 
-    if (count($parts) < 8 || !str_contains($parts[4], "query[")) {
+    if (count($parts) < 8 || !str_contains($parts[5], "query[")) {
+	// echo $parts[4] . " " . count($parts) . "\n";
+	//print_r($line);
         return MaybeO::of(NULL);
     }
 
-    $host = $parts[5];
+    $src = $parts[8];
+    $host = $parts[6];
     $domain = get_domain($host);
-    return MaybeO::of(new Edge($host, $domain, time()));
+    return MaybeO::of(new Edge($src, $host, time()));
 }
 
 $config = json_decode(file_get_contents("config.json"), true);
@@ -119,18 +122,18 @@ $pipe = fopen($config['dnsmasq_log'], 'r');
 panic_if(!$pipe, "Error: Unable to open named pipe {$config['dnsmasq_log']}.\n");
 echo "Listening for input on the named pipe: {$config['dnsmasq_log']}\n";
 
-$queue = MaybeO::of(ftok($config['dnsmasq_log'], 'R'))->map('msg_get_queue');
+//$queue = MaybeO::of(ftok($config['dnsmasq_log'], 'R'))->map('msg_get_queue');
 
-print_r($queue);
+//print_r($queue);
 
 $queue = MaybeO::of(msg_get_queue(ftok('config.json', 'R'), 0666));
-print_r($queue);
-die("\n");
+//print_r($queue);
+//die("\n");
 
 
 $queue_send_fn = function(Edge $edge) use ($queue) {
-    echo " send edge\n";
-    print_r($edge);
+    //echo " send edge\n";
+    // print_r($edge);
 
     $error_code = 22;
     $success = msg_send($queue(), 1, json_encode($edge), false, false, $error_code);
@@ -160,7 +163,6 @@ try {
         if ($line !== false) {
             // Pass the line to the parsing function
             $edge = parse_line(trim($line));
-
             $edge->effect($queue_send_fn);
         }
     }
