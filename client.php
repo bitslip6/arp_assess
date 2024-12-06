@@ -8,10 +8,26 @@ require "threadfin/db.php";
 use \ThreadFin\Core\MaybeStr as MaybeStr;
 use \ThreadFin\Core\MaybeO as MaybeO;
 use \ThreadFin\Core\Maybe as Maybe;
+
+use const ThreadFin\DB\DB_DUPLICATE_IGNORE;
+use const ThreadFin\DB\DB_DUPLICATE_UPDATE;
+
 use function \ThreadFin\Util\panic_if as panic_if;
 use function \ThreadFin\Util\not as not;
 use function \ThreadFin\Core\partial_right as partial_right;
 use function \ThreadFin\Util\icontains as icontains;
+
+function get_ethernet(string $ipAddress): ?string {
+    // Execute the 'arp' command
+    $output = shell_exec("arp -n $ipAddress 2>/dev/null");
+
+    // Check if output contains a valid MAC address
+    if (preg_match('/(?:[0-9a-f]{2}:){5}[0-9a-f]{2}/i', $output, $matches)) {
+        return $matches[0]; // Return the MAC address
+    }
+
+    return null; // MAC address not found
+}
 
 
 class Whois_Info {
@@ -37,6 +53,71 @@ class Whois_Info {
             ? $this->raw
             : "Whois_Info: $this->as $this->org $this->country $this->cidr $this->net"; 
     }
+}
+
+
+/**
+ * Set a specific bit in a binary string.
+ *
+ * @param string $bits   The binary string (36 bytes).
+ * @param int    $bucket The bucket index to set.
+ * @return string The modified binary string.
+ */
+function setBit(string $bits, int $bucket): string {
+    $byteIndex = intdiv($bucket, 8);
+    $bitIndex = $bucket % 8;
+    
+    $byte = ord($bits[$byteIndex]);
+    $byte |= (1 << $bitIndex);
+    $bits[$byteIndex] = chr($byte);
+    return $bits;
+}
+
+/**
+ * Unset a specific bit in a binary string.
+ *
+ * @param string $bits   The binary string (36 bytes).
+ * @param int    $bucket The bucket index to unset.
+ * @return string The modified binary string.
+ */
+function unsetBit(string $bits, int $bucket): string {
+    $byteIndex = intdiv($bucket, 8);
+    $bitIndex = $bucket % 8;
+    
+    $byte = ord($bits[$byteIndex]);
+    $byte &= ~(1 << $bitIndex);
+    $bits[$byteIndex] = chr($byte);
+    return $bits;
+}
+
+/**
+ * Clear all bits in a range [start, end] inclusive, handling empty or invalid ranges gracefully.
+ *
+ * @param string $bits  The binary string.
+ * @param int    $start Start bucket index.
+ * @param int    $end   End bucket index.
+ * @return string The modified binary string.
+ */
+function clearRange(string $bits, int $start, int $end): string {
+    if ($start > $end) {
+        return $bits; // No range to clear
+    }
+    for ($b = $start; $b <= $end; $b++) {
+        $bits = unsetBit($bits, $b);
+    }
+    return $bits;
+}
+
+
+/**
+ * Get the bucket index (0-287) corresponding to a given DateTime.
+ *
+ * @param DateTime $dt The date-time object.
+ * @return int Bucket index (0 to 287).
+ */
+function get_bucket_index(DateTime $dt): int {
+    $secondsSinceMidnight = ($dt->format('H') * 3600) + ($dt->format('i') * 60) + $dt->format('s');
+    return intdiv($secondsSinceMidnight, 300); // 300s = 5min
 }
 
 
@@ -99,83 +180,78 @@ function find_whois(string $remote_ip, bool $return_raw = false): Whois_Info
             ->map($read_fn);
         $info->raw = ($return_raw) ? "" : $x();
         */
-    $cmd = "whois $sanitized";
-    echo "[$cmd]\n";
     $z = `whois $sanitized`;
-    echo "[$z]\n";
     $x = MaybeStr::of($z);
 
 
-        //  pull the as number from anywhere
-        if (preg_match("/AS([0-9]+)/", $x(), $matches)) {
-            $info->as = $matches[1];
-        }
-        // city is common
-        if (preg_match("/city[^:]*:\s*(.*)/i", $x(), $matches)) {
-            $info->city = $matches[1];
-        }
-        // created date
-        if (preg_match("/creat[^:]*:\s*(.*)/i", $x(), $matches)) {
-            $info->created = $matches[1];
-        }
-        // expired date
-        if (preg_match("/expir[^:]*:\s*(.*)/i", $x(), $matches)) {
-            $info->expires = $matches[1];
-        }
-        // updated date
-        if (preg_match("/update[^:]*:\s*(.*)/i", $x(), $matches)) {
-            $info->updated = $matches[1];
-        }
-        // registrar date
-        if (preg_match("/registrar:\s*(.*)/i", $x(), $matches)) {
-            $info->registrar = $matches[1];
-        }
-        // so is country
-        if (preg_match("/country[^:]*:\s*(.*)/i", $x(), $matches)) {
-            $info->country = icontains($matches[1], ["world"])  ? "global" : $matches[1];
-        }
-        // postal is sometimes in an address field
-        if (preg_match("/postal\s?code[^:]*:\s*(.*)/i", $x(), $matches)) {
-            $info->zip = $matches[1];
-        }
-        // cloudflare
-        if (preg_match("/cloudflare/i", $x(), $matches)) {
-            $info->cloudflare = true;
-        }
-        if (empty($info->zip) && preg_match("/address:[^:]*:.*?(\d{5})/i", $x(), $matches)) {
-            $info->zip = $matches[1];
-        }
-        // pull cidr from anywhere
-        if (empty($info->cidr) && preg_match("/([0-9.:]+\/\d+)/i", $x(), $matches)) {
-            $info->cidr = $matches[1];
-        }
+    //  pull the as number from anywhere
+    if (preg_match("/AS([0-9]+)/", $x(), $matches)) {
+        $info->as = $matches[1];
+    }
+    // city is common
+    if (preg_match("/city[^:]*:\s*(.*)/i", $x(), $matches)) {
+        $info->city = $matches[1];
+    }
+    // created date
+    if (preg_match("/creat[^:]*:\s*(.*)/i", $x(), $matches)) {
+        $info->created = $matches[1];
+    }
+    // expired date
+    if (preg_match("/expir[^:]*:\s*(.*)/i", $x(), $matches)) {
+        $info->expires = $matches[1];
+    }
+    // updated date
+    if (preg_match("/update[^:]*:\s*(.*)/i", $x(), $matches)) {
+        $info->updated = $matches[1];
+    }
+    // registrar date
+    if (preg_match("/registrar:\s*(.*)/i", $x(), $matches)) {
+        $info->registrar = $matches[1];
+    }
+    // so is country
+    if (preg_match("/country[^:]*:\s*(.*)/i", $x(), $matches)) {
+        $info->country = icontains($matches[1], ["world"])  ? "global" : $matches[1];
+    }
+    // postal is sometimes in an address field
+    if (preg_match("/postal\s?code[^:]*:\s*(.*)/i", $x(), $matches)) {
+        $info->zip = $matches[1];
+    }
+    // cloudflare
+    if (preg_match("/cloudflare/i", $x(), $matches)) {
+        $info->cloudflare = true;
+    }
+    if (empty($info->zip) && preg_match("/address:[^:]*:.*?(\d{5})/i", $x(), $matches)) {
+        $info->zip = intval($matches[1]);
+    }
+    // pull cidr from anywhere
+    if (empty($info->cidr) && preg_match("/([0-9.:]+\/\d+)/i", $x(), $matches)) {
+        $info->cidr = $matches[1];
+    }
 
-        // pull the net range
-        if (preg_match("/([\d.:]+\s+-\s+[\d.:]+)/i", $x(), $matches)) {
-            $info->net = $matches[1];
-        }
+    // pull the net range
+    if (preg_match("/([\d.:]+\s+-\s+[\d.:]+)/i", $x(), $matches)) {
+        $info->net = $matches[1];
+    }
 
-        // pull the org name from likely places
-        if (preg_match("/(org|descr|owner|netname)[^:]*:+\s*(.*)/i", $x(), $matches)) {
-            $info->org .= $matches[1] . "\n";
-        }
-        // pull all email addresses
-        if (preg_match("/[\w_\.-]+\@(\w+\.\w+)/i", $x(), $matches)) {
-            $info->domains[] = $matches[1];
-        }
+    // pull the org name from likely places
+    if (preg_match("/(org|descr|owner|netname)[^:]*:+\s*(.*)/i", $x(), $matches)) {
+        $info->org .= $matches[1] . "\n";
+    }
+    // pull all email addresses
+    if (preg_match("/[\w_\.-]+\@(\w+\.\w+)/i", $x(), $matches)) {
+        $info->domains[] = $matches[1];
+    }
 
-        if (!empty($info->as) || !empty($info->org) || !empty($info->country)) {
-            $info->arin = $info->org;
-            $info->domains = array_unique($info->domains);
-            $info->org = (empty($info->org)) ? join(", ", $info->domains) : $info->org;
+    if (!empty($info->as) || !empty($info->org) || !empty($info->country)) {
+        $info->arin = $info->org;
+        $info->domains = array_unique($info->domains);
+        $info->org = (empty($info->org)) ? join(", ", $info->domains) : $info->org;
 
-            $cache[$remote_ip] = $info;
-            return $info;
-        }
+        $cache[$remote_ip] = $info;
+        return $info;
+    }
 
-        $info->org = trim($info->org);
-    print_r($info);
-	die("chains\n");
+    $info->org = trim($info->org);
 
     $cache[$remote_ip] = $info;
     return $info;
@@ -263,7 +339,7 @@ function dump_to_db($domain_fn, $registrar_fn, $msg) : ?string {
         $has_dkim = true;
     }
 
-    print_r($who);
+    //print_r($who);
 
     $score  = 0.0;
     $score += ((!$has_spf) ? 1 : 0) * 1.4;
@@ -274,10 +350,9 @@ function dump_to_db($domain_fn, $registrar_fn, $msg) : ?string {
     $score += domain_age_to_score((300 * 86400) + (time() - strtotime($who->updated)));
 
     $reg_id = $registrar_fn([NULL, $who->registrar]);
-    echo " - insert domain ($reg_id) : {$parts[$len-2]} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $has_spf, $has_dkim, $has_google, $score, {$who->cloudflare} \n";
     $result = $domain_fn([NULL, $parts[$len-2], $parts[$len-1], $who->created, $who->expires, $reg_id, $has_spf & $has_dkim, $has_google, $score, $who->cloudflare]);
-    echo "result: [$result]\n";
-    return $domain;
+    echo " - ID: $result - insert domain ($reg_id) : {$parts[$len-2]} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $has_spf, $has_dkim, $has_google, $score, {$who->cloudflare} \n";
+    return $result;
 }
 
 
@@ -318,48 +393,93 @@ $db = DB::connect($config['db_host'], $config['db_user'], $config['db_pass'], $c
 $db->enable_log(true);
 
 //public function bulk_fn(string $table, array $columns, bool $ignore_duplicate = true) : callable { 
-$domain_fn = $db->insert_fn("domain", ['id', 'domain', 'tld', 'created', 'expires', 'registrar', 'email', 'google_verify', 'score', 'cloudflare'], false);
+
+$domain_fn = function(array $data) use ($db) {
+    $sql = $db->fetch("SELECT id FROM registrar WHERE registrar = {registrar}", $data);
+    if ($sql->count() < 1) {
+        $reg_id = $db->insert('registrar', ['id' => NULL, 'registrar' => $data['registrar']], DB_DUPLICATE_IGNORE);
+    } else {
+        $reg_id = $sql->col('id')();
+    }
+
+    $data['registrar'] = $reg_id;
+    $domain_id = $db->insert("domain", $data, DB_DUPLICATE_UPDATE);
+};
+
+/*
 $registrar_fn = $db->insert_fn("registrar", ['id', 'registrat'], false);
-print_r($domain_fn);
-print_r($registrar_fn);
+$local_fn = $db->insert_fn("host", ['id', 'hostname', 'ip4'
+*/
+$oui = file('oui.csv');
+$ether_map = array_reduce($oui, function ($carry, $line) {
+    $p = explode(",", $line);
+    $carry[trim($p[0])] = trim($p[1]);
+    return $carry;
+}, []);
 
 echo "Db connected, Insert FN created\n";
 // echo "domain fn [$domain_fn]\n";
 
-$cache = [];
+$cache_dst = [];
+$cache_src = [];
+$cache_edge = [];
 while (true) {
     $message = $queue->convert($recv_fn);
     $domain = get_domain($message['dst']);
-    if (!isset($cache[$domain])) {
-        $domain = dump_to_db($domain_fn, $registrar_fn, $message);
-
-        echo "ERR: ($domain)\n";
-        $cache[$domain] = true;
-        sleep(1);
+    $host = $message['src'];
+    // the local node
+    if (!isset($cache_src[$host])) {
+        $ethernet = get_ethernet($host);
+        $hostname = gethostbyaddr($host);
+        $local_sql = $db->fetch("SELECT id FROM locals WHERE ether = {ethernet}", ['ethernet' => $ethernet]);
+        echo " - load local\n";
+        if ($local_sql->count() <= 0) {
+            $ether_prefix = substr($ethernet, 0, 8);
+            $local_id = $db->insert('locals', ['id' => NULL, 'hostname' => $hostname, 'ether' => $ethernet, 'ether_type' => $ether_map[$ether_prefix]??'unknown']);
+            echo " - insert local\n";
+        } else {
+            $local_id = $local_sql->col('id')();
+        }
+        $cache_src[$host] = [$ethernet, gethostbyaddr($host), $local_id];
     }
+
+    // the remote node
+    if (!isset($cache_dst[$domain])) {
+        $domain_sql = $db->fetch("SELECT id FROM domain WHERE domain = {domain}", ['domain' => $domain]);
+        echo " - load remote\n";
+        if ($domain_sql->count() <= 0) {
+            $domain_id = dump_to_db($domain_fn, $registrar_fn, $message);
+            echo " - insert remote\n";
+        } else {
+            $domain_id = $domain_sql->col('id')();
+        }
+        $cache_dst[$domain] = [$ethernet, gethostbyaddr($host), $local_id];
+    }
+
+
+    // the edge
+    $edge_key = "$host:$domain:443";
+    if (!isset($cache_edge[$edge_key]) || $cache_edge[$edge_key] + 300 < time()) {
+
+        $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND remote_id = {remote_id} AND dst_port = 443", ['domain' => $domain]);
+        echo " - load edge\n";
+        if ($domain_sql->count() <= 0) {
+            $domain_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port' => 443, 'histogram' => str_pad("\0", 254, "\0")]);
+            echo " - insert edge\n";
+        } else {
+            $now = new DateTime('now');
+            $curr_bucket = get_bucket_index($now);
+            $last_bucket = get_bucket_index(new DateTime($domain_sql->col('last')()));
+            $bits = $domain_sql->col('histogram')();
+            $bits = clearRange($bits, $last_bucket + 1, $curr_bucket - 1);
+            $bits = setBit($bits, $curr_bucket);
+            $db->update("remote_edge", ['histogram' => $bits], ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port', 443]);
+            echo " - update edge\n";
+        }
+        $cache_edge[$edge_key] = time();
+    }
+    
 }
 
 
-
-/*
-    if (!isset($hosts[$domain])) {
-
-        $who = find_whois($domain);
-        $ip = gethostbyname($host);
-        $parts = explode(".", $domain);
-        $txt = get_txt_records($domain);
-        $full_txt = join(", ", $txt);
-        $has_google = false;
-        $has_spf = false;
-        if (str_contains($full_txt, "google-site-verification")) {
-            $has_google = true;
-        }
-        if (str_contains($full_txt, "v=spf1")) {
-            $has_spf = true;
-        }
-
-        $domain_fn(NULL, $parts[0], $parts[1], $who->created, $who->expires, $who->registrar, $has_spf, $has_google);
-        $hosts[$domain] = true;
-    }
-    */
 
