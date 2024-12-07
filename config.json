@@ -3,5 +3,7 @@
     "db_user": "php",
     "db_pass": "DpEzxJCfDm",
     "db_name": "arp_assess",
-    "dnsmasq_log": "/var/log/dnsmasq.log"
+    "dnsmasq_log": "/var/log/dnsmasq.log",
+    "alien_api": "",
+    "abuse_api": ""
 }

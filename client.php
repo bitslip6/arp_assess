@@ -15,7 +15,36 @@ use const ThreadFin\DB\DB_DUPLICATE_UPDATE;
 use function \ThreadFin\Util\panic_if as panic_if;
 use function \ThreadFin\Util\not as not;
 use function \ThreadFin\Core\partial_right as partial_right;
+use function ThreadFin\HTTP\cache_http;
+use function ThreadFin\HTTP\http2;
 use function \ThreadFin\Util\icontains as icontains;
+
+const BIT_HOSTING = 1;
+const BIT_FIRE_TRACK = 2;
+const BIT_FIRE_BLOCK = 3;
+const BIT_ABUSE_IP = 4;
+const BIT_MISP = 5;
+const BIT_ALIEN = 6;
+const BIT_PHISH = 7;
+const BIT_TOPMIL = 8;
+const BIT_TOP10MIL = 9;
+const BIT_SPF = 10;
+const BIT_DKIM = 11;
+const BIT_GOOGLE = 12;
+
+const VAL_HOSTING = 1 << BIT_HOSTING;
+const VAL_FIRE_TRACK = 1 << BIT_FIRE_TRACK;
+const VAL_FIRE_BLOCK = 1 << BIT_FIRE_BLOCK;
+const VAL_ABUSE_IP = 1 << BIT_ABUSE_IP;
+const VAL_MISP = 1 << BIT_MISP;
+const VAL_ALIEN = 1 << BIT_ALIEN;
+const VAL_PHISH = 1 << BIT_PHISH;
+const VAL_TOPMIL = 1 << BIT_TOPMIL;
+const VAL_TOP10MIL = 1 << BIT_TOP10MIL;
+const VAL_SPF = 1 << BIT_SPF;
+const VAL_DKIM = 1 << BIT_DKIM;
+const VAL_GOOGLE = 1 << BIT_GOOGLE;
+
 
 function get_ethernet(string $ipAddress): ?string {
     // Execute the 'arp' command
@@ -29,6 +58,16 @@ function get_ethernet(string $ipAddress): ?string {
     return null; // MAC address not found
 }
 
+
+// load file into a map
+function file_keys(string $filename) : array {
+    $result = [];
+    $x = fopen($filename, "r");
+    while ($line = fgets($x)) {
+        $result[$line] = 1;
+    }
+    return $result;
+}
 
 class Whois_Info {
     public string $city = "";
@@ -194,15 +233,15 @@ function find_whois(string $remote_ip, bool $return_raw = false): Whois_Info
     }
     // created date
     if (preg_match("/creat[^:]*:\s*(.*)/i", $x(), $matches)) {
-        $info->created = $matches[1];
+        $info->created = date_to_sql_date($matches[1]);
     }
     // expired date
     if (preg_match("/expir[^:]*:\s*(.*)/i", $x(), $matches)) {
-        $info->expires = $matches[1];
+        $info->expires = date_to_sql_date($matches[1]);
     }
     // updated date
     if (preg_match("/update[^:]*:\s*(.*)/i", $x(), $matches)) {
-        $info->updated = $matches[1];
+        $info->updated = date_to_sql_date($matches[1]);
     }
     // registrar date
     if (preg_match("/registrar:\s*(.*)/i", $x(), $matches)) {
@@ -305,62 +344,176 @@ function domain_age_to_score(int $seconds) : float {
     return $output;
 }
 
+/**
+ * convert any date format to a mysql date format, or the empty string
+ */
+function date_to_sql_date(string $input_date) : string {
+    if (strlen($input_date) > 4) {
+        $tmp_date = strtotime($input_date);
+        if ($tmp_date > 1) {
+            return date('Y-m-d', $tmp_date);
+        }
+        return '';
+    }
+}
 
-function dump_to_db($domain_fn, $registrar_fn, $msg) : ?string {
-    //$src_host       = gethostbyaddr($msg['src']);
-    $ip       = gethostbyname($msg['dst']);
-    $domain   = get_domain($msg['dst']);
+/**
+ * return true if domain is in malware list, will reload the malware/phish.txt list every 30 minutes
+ */
+function is_phish(string $domain) : bool {
+    static $list = NULL; 
+    static $age = -1; 
+    if ($list == NULL or $age < time() - 3600) {
+        $list = file_keys("malware/phish.txt");
+        gc_collect_cycles();
+    }
+    return isset($list[$domain]);
+}
+
+/**
+ * return true if domain is in malware list, will reload the malware/phish.txt list every 30 minutes
+ */
+function is_abuseip(string $ip) : bool {
+    static $list = NULL; 
+    static $age = -1; 
+    // reload the abuse ip data every hour
+    if ($list == NULL or $age < time() - (3600)) {
+        $list = file_keys("malware/abuseip.txt");
+        gc_collect_cycles();
+    }
+    return isset($list[$ip]);
+}
+
+/**
+ * return true if domain is in majestic million list, will reload the malware/majestic_domain.txt list every 30 minutes
+ */
+function is_majestic(string $domain) : bool {
+    static $list = NULL; 
+    static $age = -1; 
+    // reload the majestic million data every hour
+    if ($list == NULL or $age < time() - (3600)) {
+        $list = file_keys("malware/majestic_domain.txt");
+        gc_collect_cycles();
+    }
+    return isset($list[$domain]);
+}
+
+/**
+ * return true if domain is a public hosting domain, will reload the malware/hosting_domains.txt list every 96 hours
+ */
+function is_hosting(string $domain) : bool {
+    static $list = NULL; 
+    static $age = -1; 
+    // reload the majestic million data every hour
+    if ($list == NULL or $age < time() - (3600*96)) {
+        $list = file_keys("malware/hosting_domains.txt");
+        gc_collect_cycles();
+    }
+    return isset($list[$domain]);
+}
+
+
+
+/**
+ * map an alient vault ioc count number to an arp_asses score
+ */
+function map_weighted_value($input) {
+    // Ensure input is within the valid range
+    if ($input < 0 || $input > 30) {
+        throw new InvalidArgumentException("Input must be between 0 and 30.");
+    }
+
+    // Parameters for the scaling
+    $max_input = 30;  // Maximum input value
+    $max_output = 14; // Maximum output value
+    $scale_factor = 0.5; // Factor < 1 gives more weight to lower numbers
+
+    // Apply complementary power scaling for the weighted mapping
+    $normalized_input = $input / $max_input; // Normalize to a range of 0 to 1
+    $weighted_value = pow($normalized_input, $scale_factor); // Apply inverted weighting
+    $output = $weighted_value * $max_output; // Scale to the output range
+
+    // Round to the nearest integer for discrete output
+    return round($output);
+}
+
+
+
+/**
+ * @param callable $domain_fn function to write domain to database
+ */
+function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, string $domain) : ?string {
+    $ip       = gethostname($domain);
     $who      = find_whois($domain);
-    $parts    = explode(".", $msg['dst']);
+    $parts    = explode(".", $domain);
     $len      = count($parts);
     $txt      = get_txt_records($domain);
     $dkim     = get_txt_records("_dkim.$domain");
-
-    if (strlen($who->created) > 4) {
-        $tmp_date = strtotime($who->created);
-        if ($tmp_date > 1) { $who->created = date('Y-m-d', $tmp_date); }
-    }
-    if (strlen($who->expires) > 4) {
-        $tmp_date = strtotime($who->expires);
-        if ($tmp_date > 1) { $who->expires = date('Y-m-d', $tmp_date); }
-    }
+    $flags    = 0;
 
 
-    $has_google = false;
-    $has_spf    = false;
-    $has_dkim   = false;
-    if (str_contains(join(", ", $txt), "google-site-verification")) {
-        $has_google = true;
-    }
-    if (str_contains(join(", ", $txt), "v=spf1")) {
-        $has_spf = true;
-    }
-    if (str_contains(join(", ", $dkim), "DMARC")) {
-        $has_dkim = true;
-    }
-
-    //print_r($who);
+    $has_google = (str_contains(join(", ", $txt), "google-site-verification")) ? true : false;
+    $has_spf    = (str_contains(join(", ", $txt), "v=spf1")) ? true : false;
+    $has_dkim   = (str_contains(join(", ", $dkim), "DMARC")) ? true : false;
 
     $score  = 0.0;
-    $score += ((!$has_spf) ? 1 : 0) * 1.4;
-    $score += ((!$has_google) ? 1 : 0) * 1.2;
-    $score += ((!$has_dkim) ? 1 : 0) * 1.2;
+    if ($has_spf) {
+        $score += 1.4;
+        $flags += VAL_SPF;
+    }
+    if ($has_google) {
+        $score += 1.2;
+        $flags += VAL_GOOGLE;
+    }
+    if ($has_dkim) {
+        $score += 1.1;
+        $flags += VAL_DKIM;
+    }
     $score += domain_age_to_score(time() - strtotime($who->created));
-    // add score if the domain is modified in the last 60 days
-    $score += domain_age_to_score((300 * 86400) + (time() - strtotime($who->updated)));
+    if (is_abuseip($ip)) {
+        $score += 10.0;
+        $flags += VAL_ABUSE_IP;
+    }
+    if (is_majestic($ip)) {
+        $score -= 1.5;
+        $flags += VAL_TOPMIL;
+    }
+    if (is_phish($domain)) {
+        $score += 12.0;
+        $flags += VAL_PHISH;
+    }
+
+
+    // get malware details from alienware
+    $malware = 0;
+    $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
+    $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
+    $content = cache_http("cache", (3600*2), "GET", $url, "", $headers);
+    $alien = json_decode($content, true);
+    if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
+        $count = intval($alien['pulse_info']['count']);
+        if ($count > 0) {
+            $score += map_weighted_value($count);
+            $flags += VAL_ALIEN;
+        }
+    }
 
     $reg_id = $registrar_fn([NULL, $who->registrar]);
-    $result = $domain_fn([NULL, $parts[$len-2], $parts[$len-1], $who->created, $who->expires, $reg_id, $has_spf & $has_dkim, $has_google, $score, $who->cloudflare]);
-    echo " - ID: $result - insert domain ($reg_id) : {$parts[$len-2]} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $has_spf, $has_dkim, $has_google, $score, {$who->cloudflare} \n";
+    $result = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $has_spf & $has_dkim, $has_google, $score, $who->cloudflare, $flags]);
+    echo " - ID: $result - insert domain ($reg_id) : {$domain} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $has_spf, $has_dkim, $has_google, $score, {$who->cloudflare} \n";
     return $result;
 }
 
 
+gc_enable();
 $t = file_get_contents("config.json");
 $config = json_decode($t, true);
 $a = is_array($config);
 $n = not($a);
 panic_if($n, "Unable to parse config.json, copy config.sample to config.json and configure settings.");
+
+$top_domains   = file_keys("malware/top.txt");
+
 
 // Open the named pipe for reading
 //$pipe = fopen($config['dnsmasq_log'], 'r');
@@ -406,9 +559,8 @@ $domain_fn = function(array $data) use ($db) {
     }
 
     $data['registrar'] = $reg_id;
-	 */
-	print_r($data);
-    $domain_id = $db->insert("domain", $data);//, DB_DUPLICATE_UPDATE);
+    */
+    $domain_id = $db->insert("domain", $data);
 };
 
 $registrar_fn = $db->insert_fn("registrar", ['id', 'registrar'], false);
@@ -426,6 +578,9 @@ while($l = fgets($o)) {
 $sz = count($ether_map);
 echo "mapped! [$sz]\n";
 /*
+=======
+$oui = file('oui.csv');
+>>>>>>> Stashed changes
 $ether_map = array_reduce($oui, function ($carry, $line) {
     $p = explode(",", $line);
     $carry[trim($p[0])] = trim($p[1]);
@@ -437,6 +592,7 @@ echo "Db connected, Insert FN created\n";
 // echo "domain fn [$domain_fn]\n";
 
 $cache_dst = [];
+$cache_host = [];
 $cache_src = [];
 $cache_edge = [];
 while (true) {
@@ -448,7 +604,7 @@ while (true) {
         $ethernet = get_ethernet($host);
         $hostname = gethostbyaddr($host);
         $local_sql = $db->fetch("SELECT id FROM locals WHERE ether = {ethernet}", ['ethernet' => $ethernet]);
-        echo " - load local\n";
+        echo " - load local [$ethernet]\n";
         if ($local_sql->count() <= 0) {
             $ether_prefix = substr($ethernet, 0, 8);
             $local_id = $db->insert('locals', ['id' => NULL, 'hostname' => $hostname, 'ether' => $ethernet, 'ether_type' => $ether_map[$ether_prefix]??'unknown']);
@@ -459,12 +615,13 @@ while (true) {
         $cache_src[$host] = [$ethernet, gethostbyaddr($host), $local_id];
     }
 
-    // the remote node
+    // the remote domain
+    // TODO: need to pull malware state from dump_to_db
     if (!isset($cache_dst[$domain])) {
         $domain_sql = $db->fetch("SELECT id FROM domain WHERE domain = {domain}", ['domain' => $domain]);
         echo " - load remote\n";
         if ($domain_sql->count() <= 0) {
-            $domain_id = dump_to_db($domain_fn, $registrar_fn, $message);
+            $domain_id = dump_to_db($domain_fn, $registrar_fn, $config, $domain);
             echo " - insert remote\n";
         } else {
             $domain_id = $domain_sql->col('id')();
@@ -472,12 +629,54 @@ while (true) {
         $cache_dst[$domain] = [$ethernet, gethostbyaddr($host), $local_id];
     }
 
+    // the remote node
+    if (!isset($cache_dst[$domain])) {
+        $host_sql = $db->fetch("SELECT id FROM host WHERE hostname = {hostname}", ['hostname' => $msg['dst']]);
+        echo " - load host\n";
+        if ($host_sql->count() <= 0) {
+            $ip   = gethostbyname($msg['dst']);
+            $who  = find_whois($ip);
+            $bits = str_pad("\0", 254, "\0");
+            $malware = 0;
+            $top = 0;
+
+            if (isset($host_domains[$domain])) {
+                $lists = setBit($bits, 2);
+            }
+
+            if (isset($phish_domains[$domain])) {
+                $lists = setBit($bits, 3);
+                $malware = 1;
+            }
+
+            if (isset($top_domains[$domain])) {
+                $lists = setBit($bits, 4);
+                $top = 1;
+            }
+
+            // TODO: update bits with constants
+            // alient vault
+            if (isset($malware)) {
+                $lists = setBit($bits, 5);
+                $top = 1;
+            }
+            
+            // todo: update malware with malware state, update lists
+            $db->insert("host", [NULL, $msg['dst'], "inet_pton($ip)", 0, 0, $who->org]);
+            echo " - insert remote\n";
+        } else {
+            $domain_id = $host_sql->col('id')();
+        }
+        $cache_dst[$domain] = [$ethernet, gethostbyaddr($host), $local_id];
+    }
+
+
 
     // the edge
     $edge_key = "$host:$domain:443";
     if (!isset($cache_edge[$edge_key]) || $cache_edge[$edge_key] + 300 < time()) {
 
-        $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND remote_id = {remote_id} AND dst_port = 443", ['domain' => $domain]);
+        $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND remote_id = {remote_id} AND dst_port = 443", ['local_id' => $local_id, 'remote_id' => $domain_id]);
         echo " - load edge\n";
 	print_r($domain_sql);
         if ($domain_sql->count() <= 0) {
