@@ -214,7 +214,7 @@ function find_whois(string $remote_ip, bool $return_raw = false): Whois_Info
     }
     // postal is sometimes in an address field
     if (preg_match("/postal\s?code[^:]*:\s*(.*)/i", $x(), $matches)) {
-        $info->zip = $matches[1];
+        $info->zip = intval($matches[1]);
     }
     // cloudflare
     if (preg_match("/cloudflare/i", $x(), $matches)) {
@@ -370,6 +370,7 @@ panic_if($n, "Unable to parse config.json, copy config.sample to config.json and
 
 $queue_id = ftok('config.json', 'R');
 $queue = MaybeO::of(msg_get_queue($queue_id, 0666));
+echo "Config Loaded\n";
 
 $recv_fn = function($queue) {
     msg_receive($queue, 1, $type, 1024*32, $message, false, 0, $error);
@@ -391,10 +392,12 @@ $recv_fn = function($queue) {
 
 $db = DB::connect($config['db_host'], $config['db_user'], $config['db_pass'], $config['db_name']);
 $db->enable_log(true);
+echo "DB Connected\n";
 
 //public function bulk_fn(string $table, array $columns, bool $ignore_duplicate = true) : callable { 
 
 $domain_fn = function(array $data) use ($db) {
+	/*
     $sql = $db->fetch("SELECT id FROM registrar WHERE registrar = {registrar}", $data);
     if ($sql->count() < 1) {
         $reg_id = $db->insert('registrar', ['id' => NULL, 'registrar' => $data['registrar']], DB_DUPLICATE_IGNORE);
@@ -403,19 +406,32 @@ $domain_fn = function(array $data) use ($db) {
     }
 
     $data['registrar'] = $reg_id;
-    $domain_id = $db->insert("domain", $data, DB_DUPLICATE_UPDATE);
+	 */
+	print_r($data);
+    $domain_id = $db->insert("domain", $data);//, DB_DUPLICATE_UPDATE);
 };
 
+$registrar_fn = $db->insert_fn("registrar", ['id', 'registrar'], false);
+//$local_fn = $db->insert_fn("host", ['id', 'hostname', 'ip4'
+
+echo "Loading OUI Data\n";
+//$oui = file('oui.csv');
+echo "open\n";
+$o = fopen("oui.csv", "r");
+$ether_map = [];
+while($l = fgets($o)) {
+    $p = explode(",", $l);
+    $ether_map[trim($p[0])] = trim($p[1]);
+}
+$sz = count($ether_map);
+echo "mapped! [$sz]\n";
 /*
-$registrar_fn = $db->insert_fn("registrar", ['id', 'registrat'], false);
-$local_fn = $db->insert_fn("host", ['id', 'hostname', 'ip4'
-*/
-$oui = file('oui.csv');
 $ether_map = array_reduce($oui, function ($carry, $line) {
     $p = explode(",", $line);
     $carry[trim($p[0])] = trim($p[1]);
     return $carry;
 }, []);
+ */
 
 echo "Db connected, Insert FN created\n";
 // echo "domain fn [$domain_fn]\n";
@@ -463,9 +479,11 @@ while (true) {
 
         $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND remote_id = {remote_id} AND dst_port = 443", ['domain' => $domain]);
         echo " - load edge\n";
+	print_r($domain_sql);
         if ($domain_sql->count() <= 0) {
-            $domain_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port' => 443, 'histogram' => str_pad("\0", 254, "\0")]);
-            echo " - insert edge\n";
+            $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port' => 443, 'histogram' => str_pad("\0", 254, "\0"), 'first' => NULL, 'last' => NULL]);
+            echo " - insert edge: $edge_id\n";
+	    print_r($db);
         } else {
             $now = new DateTime('now');
             $curr_bucket = get_bucket_index($now);
