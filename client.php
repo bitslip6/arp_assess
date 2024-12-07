@@ -61,6 +61,7 @@ function get_ethernet(string $ipAddress): ?string {
 
 // load file into a map
 function file_keys(string $filename) : array {
+    echo "loading file: [$filename]\n";
     $result = [];
     $x = fopen($filename, "r");
     while ($line = fgets($x)) {
@@ -568,7 +569,6 @@ $registrar_fn = $db->insert_fn("registrar", ['id', 'registrar'], false);
 
 echo "Loading OUI Data\n";
 //$oui = file('oui.csv');
-echo "open\n";
 $o = fopen("oui.csv", "r");
 $ether_map = [];
 while($l = fgets($o)) {
@@ -576,17 +576,6 @@ while($l = fgets($o)) {
     $ether_map[trim($p[0])] = trim($p[1]);
 }
 $sz = count($ether_map);
-echo "mapped! [$sz]\n";
-/*
-=======
-$oui = file('oui.csv');
->>>>>>> Stashed changes
-$ether_map = array_reduce($oui, function ($carry, $line) {
-    $p = explode(",", $line);
-    $carry[trim($p[0])] = trim($p[1]);
-    return $carry;
-}, []);
- */
 
 echo "Db connected, Insert FN created\n";
 // echo "domain fn [$domain_fn]\n";
