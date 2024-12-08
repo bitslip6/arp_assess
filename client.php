@@ -367,6 +367,7 @@ function is_phish(string $domain) : bool {
     static $age = -1; 
     if ($list == NULL or $age < time() - 3600) {
         $list = file_keys("malware/phish.txt");
+        $age = time();
         gc_collect_cycles();
     }
     return isset($list[$domain]);
@@ -381,6 +382,7 @@ function is_abuseip(string $ip) : bool {
     // reload the abuse ip data every hour
     if ($list == NULL or $age < time() - (3600)) {
         $list = file_keys("malware/abuseip.txt");
+        $age = time();
         gc_collect_cycles();
     }
     return isset($list[$ip]);
@@ -395,6 +397,7 @@ function is_majestic(string $domain) : bool {
     // reload the majestic million data every hour
     if ($list == NULL or $age < time() - (3600)) {
         $list = file_keys("malware/majestic_domain.txt");
+        $age = time();
         gc_collect_cycles();
     }
     return isset($list[$domain]);
@@ -409,6 +412,7 @@ function is_hosting(string $domain) : bool {
     // reload the majestic million data every hour
     if ($list == NULL or $age < time() - (3600*96)) {
         $list = file_keys("malware/hosting_domains.txt");
+        $age = time();
         gc_collect_cycles();
     }
     return isset($list[$domain]);
