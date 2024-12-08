@@ -32,6 +32,7 @@ const BIT_TOP10MIL = 9;
 const BIT_SPF = 10;
 const BIT_DKIM = 11;
 const BIT_GOOGLE = 12;
+const BIT_CLOUDFLARE = 13;
 
 const VAL_HOSTING = 1 << BIT_HOSTING;
 const VAL_FIRE_TRACK = 1 << BIT_FIRE_TRACK;
@@ -45,11 +46,45 @@ const VAL_TOP10MIL = 1 << BIT_TOP10MIL;
 const VAL_SPF = 1 << BIT_SPF;
 const VAL_DKIM = 1 << BIT_DKIM;
 const VAL_GOOGLE = 1 << BIT_GOOGLE;
+const VAL_CLOUDFLARE = 1 << BIT_CLOUDFLARE;
+
+
+class local {
+    public function __construct(
+        public int $id,
+        public string $hostname,
+        public string $ip,
+        public string $ether,
+        public string $ether_type,
+    ) {}
+
+    public function __toString() : string {
+        return "LocalNode[{$this->id}] {$this->hostname}({$this->ip}):{$this->ether} ({$this->ether_type})";
+    }
+};
+
+class domain {
+    public function __construct(
+        public int $id,
+        public string $domain,
+        public DateTime $created,
+        public DateTime $expires,
+        public string $registrar,
+        public float $score,
+        public int $flags,
+    ) {}
+
+    public function __toString() : string {
+        return "Domain[{$this->id}] {$this->domain}({$this->created->format('Y-m-d')}) {$this->score} ({$this->flags})";
+    }
+};
 
 
 function get_ethernet(string $ipAddress): ?string {
     // Execute the 'arp' command
     $output = shell_exec("arp -n $ipAddress 2>/dev/null");
+
+    echo "GET IP ETHER $ipAddress = " . $output . "\n";
 
     // Check if output contains a valid MAC address
     if (preg_match('/(?:[0-9a-f]{2}:){5}[0-9a-f]{2}/i', $output, $matches)) {
@@ -450,7 +485,7 @@ function map_weighted_value($input) {
 /**
  * @param callable $domain_fn function to write domain to database
  */
-function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, string $domain) : ?string {
+function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, string $domain) : domain {
     $ip       = gethostbyname($domain);
     $who      = find_whois($domain);
     $parts    = explode(".", $domain);
@@ -490,16 +525,24 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $score += 12.0;
         $flags += VAL_PHISH;
     }
+    if ($who->cloudflare) {
+        $flags += VAL_CLOUDFLARE;
+    }
 
 
     // get malware details from alienware
-    $malware = 0;
+    echo "alient vault search $domain\n";
     $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
     $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
     $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
     $alien = json_decode($content, true);
+    if ($alien == false) {
+        print_r($content);
+        die("ERROR DECODING ALIEN VAULT DATA!\n");
+    }
     if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
         $count = intval($alien['pulse_info']['count']);
+        echo "alien pulse count: $domain ($count)\n";
         if ($count > 0) {
             $score += map_weighted_value($count);
             $flags += VAL_ALIEN;
@@ -507,9 +550,10 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     }
 
     $reg_id = $registrar_fn([NULL, $who->registrar]);
-    $result = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $has_spf & $has_dkim, $has_google, $score, $who->cloudflare, $flags]);
-    echo " - ID: $result - insert domain ($reg_id) : {$domain} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $has_spf, $has_dkim, $has_google, $score, {$who->cloudflare} \n";
-    return $result;
+    $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags]);
+    echo " - ID: $domain_id - insert domain ($reg_id) : {$domain} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $score, {$malware} \n";
+    $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $malware);
+    return $domain;
 }
 
 
@@ -571,8 +615,7 @@ $domain_fn = function(array $data) use ($db) {
     $domain_id = $db->insert("domain", $data);
 };
 
-$registrar_fn = $db->insert_fn("registrar", ['id', 'registrar'], false);
-//$local_fn = $db->insert_fn("host", ['id', 'hostname', 'ip4'
+$registrar_fn = $db->upsert_fn("registrar");
 
 echo "Loading OUI Data\n";
 //$oui = file('oui.csv');
@@ -591,41 +634,72 @@ $cache_dst = [];
 $cache_host = [];
 $cache_src = [];
 $cache_edge = [];
+
+$local_fn = $db->upsert_fn("locals");
 while (true) {
-    $message = $queue->convert($recv_fn);
-    $domain = get_domain($message['dst']);
-    $host = $message['src'];
+    $message     = $queue->convert($recv_fn);
+    $host_name   = $message['dst'];
+    $domain_name = get_domain($host_name);
+    $host_ip     = $message['src'];
+
     // the local node
-    if (!isset($cache_src[$host])) {
-        $ethernet = get_ethernet($host);
-        $hostname = gethostbyaddr($host);
-        $local_sql = $db->fetch("SELECT id FROM locals WHERE ether = {ethernet}", ['ethernet' => $ethernet]);
-        echo " - load local [$ethernet]\n";
-        if ($local_sql->count() <= 0) {
-            $ether_prefix = substr($ethernet, 0, 8);
-            $local_id = $db->insert('locals', ['id' => NULL, 'hostname' => $hostname, 'ether' => $ethernet, 'ether_type' => $ether_map[$ether_prefix]??'unknown']);
-            echo " - insert local\n";
-        } else {
-            $local_id = $local_sql->col('id')();
-        }
-        $cache_src[$host] = [$ethernet, gethostbyaddr($host), $local_id];
+    if (!isset($cache_src[$host_ip])) {
+        $ethernet = get_ethernet($host_ip);
+        $prefix   = substr($ethernet, 0, 8);
+        $host     = gethostbyaddr($host_ip);
+        $oui_name = $ether_map[$prefix]??'unknown';
+        $data = [
+            'id' => NULL,
+            'hostname' => $host,
+            'ether' => $ethernet,
+            'ether_type' => $oui_name,
+            'iptxt' => $host_ip,
+            '!ipbin' => "inet_ATON($host_ip)"];
+        $local_id = $local_fn($data);
+        echo " - create local node: $local_id - $host_ip, $ethernet, $oui_name, $host\n";
+        $cache_src[$host_ip] = new local($local_id, $host, $host_ip, $ethernet, $oui_name);
     }
+    $local_node = $cache_src[$host_ip]??NULL;
+    echo " + Load node: $local_node\n";
+    ASSERT($local_node instanceOf local, "Internal error: local node not created.");
+
 
     // the remote domain
     // TODO: need to pull malware state from dump_to_db
-    if (!isset($cache_dst[$domain])) {
-        $domain_sql = $db->fetch("SELECT id FROM domain WHERE domain = {domain}", ['domain' => $domain]);
-        echo " - load remote\n";
-        if ($domain_sql->count() <= 0) {
-            $domain_id = dump_to_db($domain_fn, $registrar_fn, $config, $domain);
-            echo " - insert remote\n";
-        } else {
-            $domain_id = $domain_sql->col('id')();
-        }
-        $cache_dst[$domain] = [$ethernet, gethostbyaddr($host), $local_id];
+    if (!isset($cache_dst[$domain_name])) {
+        $cache_dst[$domain_name] = dump_to_db($domain_fn, $registrar_fn, $config, $domain_name);
     }
+    $domain = $cache_dst[$domain_name];
+    echo " + Load domain: $domain\n";
+    ASSERT($domain instanceOf domain, "Internal error: domain node not created.");
+
+
+
+    // the remote host
+    if (!isset($cache_dst[$host_name])) {
+        $who = find_whois($host_ip);
+        $reverse_name = gethostbyaddr($host_ip);
+        $data = [
+            'id' => NULL,
+            'hostname' => $host_name,
+            '!ip4' => "INET_ATON($host_ip)",
+            'hosting' => $who->org,
+            'reverse' => $reverse_name,
+            'malware' => $domain->flags];
+        $host_id = $host_fn($data);
+        echo " - create remote host: $host_id - $host_ip, $host_name, {$who->org}\n";
+        $cache_dst[$host_name] = $host_id;
+    }
+    $local_node = $cache_src[$host_ip]??NULL;
+    echo " + Load node: $local_node\n";
+    ASSERT($local_node instanceOf local, "Internal error: local node not created.");
+
+
+
+
 
     // the remote node
+    /*
     if (!isset($cache_dst[$domain])) {
         $host_sql = $db->fetch("SELECT id FROM host WHERE hostname = {hostname}", ['hostname' => $msg['dst']]);
         echo " - load host\n";
@@ -674,7 +748,7 @@ while (true) {
 
         $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND remote_id = {remote_id} AND dst_port = 443", ['local_id' => $local_id, 'remote_id' => $domain_id]);
         echo " - load edge\n";
-	print_r($domain_sql);
+        print_r($domain_sql);
         if ($domain_sql->count() <= 0) {
             $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port' => 443, 'histogram' => str_pad("\0", 254, "\0"), 'first' => NULL, 'last' => NULL]);
             echo " - insert edge: $edge_id\n";
@@ -691,6 +765,7 @@ while (true) {
         }
         $cache_edge[$edge_key] = time();
     }
+    */
     
 }
 
