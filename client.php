@@ -4,6 +4,7 @@ use ThreadFin\DB\DB;
 
 require "threadfin/core.php";
 require "threadfin/db.php";
+require "threadfin/http.php";
 
 use \ThreadFin\Core\MaybeStr as MaybeStr;
 use \ThreadFin\Core\MaybeO as MaybeO;
@@ -420,9 +421,11 @@ function is_hosting(string $domain) : bool {
  */
 function map_weighted_value($input) {
     // Ensure input is within the valid range
-    if ($input < 0 || $input > 30) {
-        throw new InvalidArgumentException("Input must be between 0 and 30.");
+    if ($input < 0 || $input > 30000) {
+        throw new InvalidArgumentException("Input must be between 0 and 30000.");
     }
+
+    $input = max($input, 30);
 
     // Parameters for the scaling
     $max_input = 30;  // Maximum input value
@@ -444,7 +447,7 @@ function map_weighted_value($input) {
  * @param callable $domain_fn function to write domain to database
  */
 function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, string $domain) : ?string {
-    $ip       = gethostname($domain);
+    $ip       = gethostbyname($domain);
     $who      = find_whois($domain);
     $parts    = explode(".", $domain);
     $len      = count($parts);
@@ -489,7 +492,7 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     $malware = 0;
     $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
     $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
-    $content = cache_http("cache", (3600*2), "GET", $url, "", $headers);
+    $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
     $alien = json_decode($content, true);
     if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
         $count = intval($alien['pulse_info']['count']);
