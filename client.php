@@ -82,7 +82,7 @@ class domain {
 
 function get_ethernet(string $ipAddress): ?string {
     // Execute the 'arp' command
-    $output = shell_exec("arp -n $ipAddress 2>/dev/null");
+    $output = shell_exec("ip neigh show $ipAddress 2>/dev/null");
 
     echo "GET IP ETHER $ipAddress = " . $output . "\n";
 
@@ -551,8 +551,8 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
 
     $reg_id = $registrar_fn([NULL, $who->registrar]);
     $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags]);
-    echo " - ID: $domain_id - insert domain ($reg_id) : {$domain} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $score, {$malware} \n";
-    $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $malware);
+    echo " - ID: $domain_id - insert domain ($reg_id) : {$domain} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $score, {$flags} \n";
+    $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $flags);
     return $domain;
 }
 
@@ -601,8 +601,8 @@ echo "DB Connected\n";
 
 //public function bulk_fn(string $table, array $columns, bool $ignore_duplicate = true) : callable { 
 
-$domain_fn = function(array $data) use ($db) {
 	/*
+$domain_fn = function(array $data) use ($db) {
     $sql = $db->fetch("SELECT id FROM registrar WHERE registrar = {registrar}", $data);
     if ($sql->count() < 1) {
         $reg_id = $db->insert('registrar', ['id' => NULL, 'registrar' => $data['registrar']], DB_DUPLICATE_IGNORE);
@@ -611,10 +611,11 @@ $domain_fn = function(array $data) use ($db) {
     }
 
     $data['registrar'] = $reg_id;
-    */
     $domain_id = $db->insert("domain", $data);
 };
+    */
 
+$domain_fn = $db->upsert_fn("domain");
 $registrar_fn = $db->upsert_fn("registrar");
 
 echo "Loading OUI Data\n";
@@ -636,9 +637,14 @@ $cache_src = [];
 $cache_edge = [];
 
 $local_fn = $db->upsert_fn("locals");
+$host_fn = $db->upsert_fn("host");
 while (true) {
     $message     = $queue->convert($recv_fn);
     $host_name   = $message['dst'];
+	if (str_ends_with($host_name, "in-addr.arpa")) {
+        echo "Reverse ADDR lookup skip\n";
+		continue;
+    }
     $domain_name = get_domain($host_name);
     $host_ip     = $message['src'];
 
@@ -654,7 +660,7 @@ while (true) {
             'ether' => $ethernet,
             'ether_type' => $oui_name,
             'iptxt' => $host_ip,
-            '!ipbin' => "inet_ATON($host_ip)"];
+            '!ipbin' => "inet_ATON('$host_ip')"];
         $local_id = $local_fn($data);
         echo " - create local node: $local_id - $host_ip, $ethernet, $oui_name, $host\n";
         $cache_src[$host_ip] = new local($local_id, $host, $host_ip, $ethernet, $oui_name);
@@ -682,7 +688,7 @@ while (true) {
         $data = [
             'id' => NULL,
             'hostname' => $host_name,
-            '!ip4' => "INET_ATON($host_ip)",
+            '!ip4' => "INET_ATON('$host_ip')",
             'hosting' => $who->org,
             'reverse' => $reverse_name,
             'malware' => $domain->flags];
