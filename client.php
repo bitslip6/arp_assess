@@ -572,19 +572,21 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
         $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
         $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
-        $alien = json_decode($content, true);
-        if ($alien == false) {
-            print_r($content);
-            die("ERROR DECODING ALIEN VAULT DATA!\n");
-        }
-        if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
-            $count = intval($alien['pulse_info']['count']);
-            echo "alien pulse count: $domain ($count)\n";
-            if ($count > 0) {
-                $score += map_weighted_value($count);
-                $flags += VAL_ALIEN;
-            }
-        }
+		if (strlen($content) > 10) {
+			$alien = json_decode($content, true);
+			if ($alien == false) {
+				print_r($content);
+				echo ("\n\nERROR DECODING ALIEN VAULT DATA!\n");
+			}
+			if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
+				$count = intval($alien['pulse_info']['count']);
+				echo "alien pulse count: $domain ($count)\n";
+				if ($count > 0) {
+					$score += map_weighted_value($count);
+					$flags += VAL_ALIEN;
+				}
+			}
+		}
     }
 
     $reg_id = $registrar_fn([NULL, $who->registrar]);
@@ -734,7 +736,7 @@ while (true) {
         $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND host_id = {remote_id} AND dst_port = 443", ['local_id' => $local_node->id, 'remote_id' => $remote_node_id]);
         $curr_bucket = get_bucket_index($now);
         echo " !- load edge [$curr_bucket]\n";
-        print_r($domain_sql);
+        // print_r($domain_sql);
         if ($domain_sql->count() <= 0) {
             $histogram = str_pad("\0", 253, "\0");
             $histogram .= "\1";
