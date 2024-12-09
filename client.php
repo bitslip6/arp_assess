@@ -847,7 +847,7 @@ while (true) {
             $bits = clearRange($bits, $last_bucket + 1, $curr_bucket - 1);
             $histogram = setBit($bits, $curr_bucket);
             $edge_id = $db->update("remote_edge", ['histogram' => $histogram], ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port', 443]);
-            echo " -! update edge $edge_id ($histogram)\n";
+            echo " -! update edge_id: $edge_id lid:$local_id, rid:$remote_node_id ($histogram)\n";
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, new DateTime($domain_sql->col('last')()), $now);
         }
         $cache_edge[$edge_key] = $edge;
