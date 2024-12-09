@@ -706,12 +706,13 @@ while (true) {
 
     // the remote host
     if (!isset($cache_dst[$host_name])) {
-        $who = find_whois($host_ip);
-        $reverse_name = gethostbyaddr($host_ip);
+        $remote_ip = gethostbyname($host_name);
+        $who = find_whois($remote_ip);
+        $reverse_name = gethostbyaddr($remote_ip);
         $data = [
             'id' => NULL,
             'hostname' => $host_name,
-            '!ip4' => "INET_ATON('$host_ip')",
+            '!ip4' => "INET_ATON('$remote_ip')",
             'hosting' => $who->org,
             'reverse' => $reverse_name,
             'malware' => $domain->flags];
