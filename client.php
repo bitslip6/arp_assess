@@ -82,6 +82,21 @@ class domain {
 };
 
 
+class edge {
+    public function __construct(
+        public int $local_id,
+        public int $remote_id,
+        public int $dst_port,
+        public string $histogram,
+        public DateTime $first,
+        public DateTime $last,
+    ) {}
+
+    public function __toString() : string {
+        return "Edge[{$this->local_id}:{$this->remote_id}:{$this->dst_port}] {$this->histogram}";
+    }
+};
+
 function get_ethernet(string $ipAddress): ?string {
     // Execute the 'arp' command
     $output = shell_exec("ip neigh show $ipAddress 2>/dev/null");
@@ -549,7 +564,7 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     if (is_whitelist($domain)) {
         $score = 1.0;
         $flags += VAL_WHITELIST;
-    } else {
+    } else if (strlen($config['alien_api']) > 20) {
         // get malware details from alienware
         echo "alient vault search $domain\n";
         $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
@@ -687,7 +702,6 @@ while (true) {
     ASSERT($domain instanceOf domain, "Internal error: domain node not created.");
 
 
-
     // the remote host
     if (!isset($cache_dst[$host_name])) {
         $who = find_whois($host_ip);
@@ -703,82 +717,37 @@ while (true) {
         echo " - create remote host: $host_id - $host_ip, $host_name, {$who->org}\n";
         $cache_dst[$host_name] = $host_id;
     }
-    $local_node = $cache_src[$host_ip]??NULL;
+    $remote_node = $cache_dst[$host_name]??NULL;
     echo " + Load node: $local_node\n";
-    ASSERT($local_node instanceOf local, "Internal error: local node not created.");
-
-
-
-
-
-    // the remote node
-    /*
-    if (!isset($cache_dst[$domain])) {
-        $host_sql = $db->fetch("SELECT id FROM host WHERE hostname = {hostname}", ['hostname' => $msg['dst']]);
-        echo " - load host\n";
-        if ($host_sql->count() <= 0) {
-            $ip   = gethostbyname($msg['dst']);
-            $who  = find_whois($ip);
-            $bits = str_pad("\0", 254, "\0");
-            $malware = 0;
-            $top = 0;
-
-            if (isset($host_domains[$domain])) {
-                $lists = setBit($bits, 2);
-            }
-
-            if (isset($phish_domains[$domain])) {
-                $lists = setBit($bits, 3);
-                $malware = 1;
-            }
-
-            if (isset($top_domains[$domain])) {
-                $lists = setBit($bits, 4);
-                $top = 1;
-            }
-
-            // TODO: update bits with constants
-            // alient vault
-            if (isset($malware)) {
-                $lists = setBit($bits, 5);
-                $top = 1;
-            }
-            
-            // todo: update malware with malware state, update lists
-            $db->insert("host", [NULL, $msg['dst'], "inet_pton($ip)", 0, 0, $who->org]);
-            echo " - insert remote\n";
-        } else {
-            $domain_id = $host_sql->col('id')();
-        }
-        $cache_dst[$domain] = [$ethernet, gethostbyaddr($host), $local_id];
-    }
+    ASSERT($remote_node instanceOf domain, "Internal error: remote node not created.");
 
 
 
     // the edge
     $edge_key = "$host:$domain:443";
-    if (!isset($cache_edge[$edge_key]) || $cache_edge[$edge_key] + 300 < time()) {
+    if (!isset($cache_edge[$edge_key]) || $cache_edge[$edge_key]->last + 300 < time()) {
 
+        $now = new DateTime('now');
         $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND remote_id = {remote_id} AND dst_port = 443", ['local_id' => $local_id, 'remote_id' => $domain_id]);
-        echo " - load edge\n";
+        $curr_bucket = get_bucket_index($now);
+        echo " - load edge [$curr_bucket]\n";
         print_r($domain_sql);
         if ($domain_sql->count() <= 0) {
-            $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port' => 443, 'histogram' => str_pad("\0", 254, "\0"), 'first' => NULL, 'last' => NULL]);
-            echo " - insert edge: $edge_id\n";
-	    print_r($db);
+            $histogram = str_pad("\0", 254, "\0");
+            $histogram = setBit($histogram, $curr_bucket);
+            $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port' => 443, 'histogram' => $histogram]);
+            echo " - create insert edge: $edge_id ($histogram)\n";
+	        print_r($db);
         } else {
-            $now = new DateTime('now');
-            $curr_bucket = get_bucket_index($now);
             $last_bucket = get_bucket_index(new DateTime($domain_sql->col('last')()));
             $bits = $domain_sql->col('histogram')();
             $bits = clearRange($bits, $last_bucket + 1, $curr_bucket - 1);
             $bits = setBit($bits, $curr_bucket);
-            $db->update("remote_edge", ['histogram' => $bits], ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port', 443]);
-            echo " - update edge\n";
+            $edge_id = $db->update("remote_edge", ['histogram' => $bits], ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port', 443]);
+            echo " -# update edge $edge_id ($bits)\n";
         }
         $cache_edge[$edge_key] = time();
     }
-    */
     
 }
 
