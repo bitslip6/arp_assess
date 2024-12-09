@@ -705,7 +705,7 @@ while (true) {
 
 
     // the remote host
-    if (!isset($cache_dst[$host_name])) {
+    if (!isset($cache_dst["HOST:$host_name"])) {
         $remote_ip = gethostbyname($host_name);
         $who = find_whois($remote_ip);
         $reverse_name = gethostbyaddr($remote_ip);
@@ -718,9 +718,9 @@ while (true) {
             'malware' => $domain->flags];
         $host_id = $host_fn($data);
         echo " - create remote host: $host_id - $host_ip, $host_name, {$who->org}\n";
-        $cache_dst[$host_name] = $host_id;
+        $cache_dst["HOST:$host_name"] = $host_id;
     }
-    $remote_node_id = $cache_dst[$host_name]??NULL;
+    $remote_node_id = $cache_dst["HOST:$host_name"]??NULL;
     echo " + Load node: $local_node\n";
     ASSERT($remote_node_id > 0, "Internal error: remote node not created.");
 
