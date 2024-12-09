@@ -27,13 +27,14 @@ const BIT_ABUSE_IP = 4;
 const BIT_MISP = 5;
 const BIT_ALIEN = 6;
 const BIT_PHISH = 7;
-const BIT_TOPMIL = 8;
-const BIT_TOP10MIL = 9;
-const BIT_SPF = 10;
-const BIT_DKIM = 11;
-const BIT_GOOGLE = 12;
-const BIT_CLOUDFLARE = 13;
-const BIT_WHITELIST = 14;
+const BIT_WARNING = 8;
+const BIT_TOPMIL = 9;
+const BIT_TOP10MIL = 10;
+const BIT_SPF = 11;
+const BIT_DKIM = 12;
+const BIT_GOOGLE = 13;
+const BIT_CLOUDFLARE = 14;
+const BIT_WHITELIST = 15;
 
 const VAL_HOSTING = 1 << BIT_HOSTING;
 const VAL_FIRE_TRACK = 1 << BIT_FIRE_TRACK;
@@ -42,6 +43,7 @@ const VAL_ABUSE_IP = 1 << BIT_ABUSE_IP;
 const VAL_MISP = 1 << BIT_MISP;
 const VAL_ALIEN = 1 << BIT_ALIEN;
 const VAL_PHISH = 1 << BIT_PHISH;
+const VAL_WARNING = 1 << BIT_WARNING;
 const VAL_TOPMIL = 1 << BIT_TOPMIL;
 const VAL_TOP10MIL = 1 << BIT_TOP10MIL;
 const VAL_SPF = 1 << BIT_SPF;
@@ -329,7 +331,7 @@ function find_whois(string $remote_ip, bool $return_raw = false): Whois_Info
 
     // pull the org name from likely places
     if (preg_match("/(org|descr|owner|netname)[^:]*:+\s*(.*)/i", $x(), $matches)) {
-        $info->org .= $matches[1] . "\n";
+        $info->org .= $matches[1] . " ";
     }
     // pull all email addresses
     if (preg_match("/[\w_\.-]+\@(\w+\.\w+)/i", $x(), $matches)) {
@@ -413,6 +415,9 @@ function date_to_sql_date(string $input_date) : string {
 }
 
 /**
+ * TODO: need to move this to host info...
+ * TODO: need to add all hosting domains to whitelist
+ * TODO: need to handle hosting domains differently...
  * return true if domain is in malware list, will reload the malware/phish.txt list every 30 minutes
  */
 function is_phish(string $domain) : bool {
@@ -425,6 +430,24 @@ function is_phish(string $domain) : bool {
     }
     return isset($list[$domain]);
 }
+
+/**
+ * TODO: need to move this to host info...
+ * TODO: need to add all hosting domains to whitelist
+ * TODO: need to handle hosting domains differently...
+ * return true if domain is in malware list, will reload the malware/phish.txt list every 30 minutes
+ */
+function is_warning(string $domain) : bool {
+    static $list = NULL; 
+    static $age = -1; 
+    if ($list == NULL or $age < time() - 86400*7) {
+        $list = file_keys("malware/warning_domain.txt");
+        $age = time();
+        gc_collect_cycles();
+    }
+    return isset($list[$domain]);
+}
+
 
 /**
  * return true if domain is in whitelist, will reload the malware/whitelist.txt list every 3 days
@@ -535,22 +558,27 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
 
     $score  = 0.0;
     $note = "";
-    if ($has_spf) {
+    if (! $has_spf) {
         $score += 1.4;
         $flags += VAL_SPF;
         $note .= " SPF, ";
     }
-    if ($has_google) {
+    if (! $has_google) {
         $score += 1.2;
         $flags += VAL_GOOGLE;
         $note .= " GOOGLE, ";
     }
-    if ($has_dkim) {
+    if (! $has_dkim) {
         $score += 1.1;
         $flags += VAL_DKIM;
         $note .= " DKIM, ";
     }
-    $score += domain_age_to_score(time() - strtotime($who->created));
+    // if we know the domain creation time, and it looks created recently, add to the score
+    $time = strtotime($who->created);
+    if ($time > time() - (86400*400) && $time < time()) {
+        $score += domain_age_to_score(time() - strtotime($who->created));
+        $note .= " DOMSCORE: $score, ";
+    }
     if (is_abuseip($ip)) {
         $score += 10.0;
         $flags += VAL_ABUSE_IP;
@@ -561,7 +589,14 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $flags += VAL_TOPMIL;
         $note .= " MAJESTIC, ";
     }
-    if (is_phish($domain)) {
+    // spammy domains
+    if (is_warning($domain)) {
+        $score += 2.3;
+        $flags += VAL_WARNING;
+        $note .= " WARNING DOMAIN, ";
+    }
+    // don't mark spammy domains as phishing....
+    else if (is_phish($domain)) {
         $score += 12.0;
         $flags += VAL_PHISH;
         $note .= " PHISH, ";
@@ -571,6 +606,7 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $note .= " CLOUD, ";
     }
 
+    // white list domain
     if (is_whitelist($domain)) {
         $score = 1.0;
         $flags += VAL_WHITELIST;
