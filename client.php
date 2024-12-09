@@ -648,14 +648,9 @@ $host_fn = $db->upsert_fn("host");
 while (true) {
     $message     = $queue->convert($recv_fn);
     $host_name   = $message['dst'];
-<<<<<<< HEAD
-    if (str_ends_with($host_name, "in-addr.arpa")) {
-        echo "Reverse ADDR lookup skip\n";
-=======
 	if (str_ends_with($host_name, "in-addr.arpa")) {
         echo "Reverse ADDR lookup skip\n";
 		continue;
->>>>>>> 8cbabac106ea0bdf01d1712abd10c247a0c563dd
     }
     $domain_name = get_domain($host_name);
     $host_ip     = $message['src'];
