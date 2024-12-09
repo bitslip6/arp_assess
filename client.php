@@ -737,7 +737,7 @@ while (true) {
         if ($domain_sql->count() <= 0) {
             $histogram = str_pad("\0", 254, "\0");
             $histogram = setBit($histogram, $curr_bucket);
-            $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443, 'histogram' => $histogram]);
+            $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443, 'histogram' => $histogram, 'first' => null, 'last' => null]);
             echo " !- create insert edge: $edge_id ($histogram)\n";
 	        print_r($db);
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, $now, $now);
