@@ -33,6 +33,7 @@ const BIT_SPF = 10;
 const BIT_DKIM = 11;
 const BIT_GOOGLE = 12;
 const BIT_CLOUDFLARE = 13;
+const BIT_WHITELIST = 14;
 
 const VAL_HOSTING = 1 << BIT_HOSTING;
 const VAL_FIRE_TRACK = 1 << BIT_FIRE_TRACK;
@@ -47,6 +48,7 @@ const VAL_SPF = 1 << BIT_SPF;
 const VAL_DKIM = 1 << BIT_DKIM;
 const VAL_GOOGLE = 1 << BIT_GOOGLE;
 const VAL_CLOUDFLARE = 1 << BIT_CLOUDFLARE;
+const VAL_WHITELIST = 1 << BIT_WHITELIST;
 
 
 class local {
@@ -82,7 +84,7 @@ class domain {
 
 function get_ethernet(string $ipAddress): ?string {
     // Execute the 'arp' command
-    $output = shell_exec("arp -n $ipAddress 2>/dev/null");
+    $output = shell_exec("ip neigh show $ipAddress 2>/dev/null");
 
     echo "GET IP ETHER $ipAddress = " . $output . "\n";
 
@@ -409,6 +411,21 @@ function is_phish(string $domain) : bool {
 }
 
 /**
+ * return true if domain is in whitelist, will reload the malware/whitelist.txt list every 3 days
+ */
+function is_whitelist(string $domain) : bool {
+    static $list = NULL; 
+    static $age = -1; 
+    if ($list == NULL or $age < time() - (86400*3)) {
+        $list = file_keys("malware/whitelist.txt");
+        $age = time();
+        gc_collect_cycles();
+    }
+    return isset($list[$domain]);
+}
+
+
+/**
  * return true if domain is in malware list, will reload the malware/phish.txt list every 30 minutes
  */
 function is_abuseip(string $ip) : bool {
@@ -529,30 +546,34 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $flags += VAL_CLOUDFLARE;
     }
 
-
-    // get malware details from alienware
-    echo "alient vault search $domain\n";
-    $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
-    $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
-    $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
-    $alien = json_decode($content, true);
-    if ($alien == false) {
-        print_r($content);
-        die("ERROR DECODING ALIEN VAULT DATA!\n");
-    }
-    if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
-        $count = intval($alien['pulse_info']['count']);
-        echo "alien pulse count: $domain ($count)\n";
-        if ($count > 0) {
-            $score += map_weighted_value($count);
-            $flags += VAL_ALIEN;
+    if (is_whitelist($domain)) {
+        $score = 1.0;
+        $flags += VAL_WHITELIST;
+    } else {
+        // get malware details from alienware
+        echo "alient vault search $domain\n";
+        $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
+        $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
+        $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
+        $alien = json_decode($content, true);
+        if ($alien == false) {
+            print_r($content);
+            die("ERROR DECODING ALIEN VAULT DATA!\n");
+        }
+        if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
+            $count = intval($alien['pulse_info']['count']);
+            echo "alien pulse count: $domain ($count)\n";
+            if ($count > 0) {
+                $score += map_weighted_value($count);
+                $flags += VAL_ALIEN;
+            }
         }
     }
 
     $reg_id = $registrar_fn([NULL, $who->registrar]);
     $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags]);
-    echo " - ID: $domain_id - insert domain ($reg_id) : {$domain} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $score, {$malware} \n";
-    $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $malware);
+    echo " - ID: $domain_id - insert domain ($reg_id) : {$domain} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $score, {$flags} \n";
+    $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $flags);
     return $domain;
 }
 
@@ -601,8 +622,10 @@ echo "DB Connected\n";
 
 //public function bulk_fn(string $table, array $columns, bool $ignore_duplicate = true) : callable { 
 
-$domain_fn = function(array $data) use ($db) {
+$domain_fn = $db->upsert_fn("domain");
+
 	/*
+$domain_fn = function(array $data) use ($db) {
     $sql = $db->fetch("SELECT id FROM registrar WHERE registrar = {registrar}", $data);
     if ($sql->count() < 1) {
         $reg_id = $db->insert('registrar', ['id' => NULL, 'registrar' => $data['registrar']], DB_DUPLICATE_IGNORE);
@@ -611,9 +634,9 @@ $domain_fn = function(array $data) use ($db) {
     }
 
     $data['registrar'] = $reg_id;
-    */
     $domain_id = $db->insert("domain", $data);
 };
+    */
 
 $registrar_fn = $db->upsert_fn("registrar");
 
@@ -639,6 +662,9 @@ $local_fn = $db->upsert_fn("locals");
 while (true) {
     $message     = $queue->convert($recv_fn);
     $host_name   = $message['dst'];
+    if (str_ends_with($host_name, "in-addr.arpa")) {
+        echo "Reverse ADDR lookup skip\n";
+    }
     $domain_name = get_domain($host_name);
     $host_ip     = $message['src'];
 
@@ -654,7 +680,7 @@ while (true) {
             'ether' => $ethernet,
             'ether_type' => $oui_name,
             'iptxt' => $host_ip,
-            '!ipbin' => "inet_ATON($host_ip)"];
+            '!ipbin' => "inet_ATON('$host_ip')"];
         $local_id = $local_fn($data);
         echo " - create local node: $local_id - $host_ip, $ethernet, $oui_name, $host\n";
         $cache_src[$host_ip] = new local($local_id, $host, $host_ip, $ethernet, $oui_name);
@@ -682,7 +708,7 @@ while (true) {
         $data = [
             'id' => NULL,
             'hostname' => $host_name,
-            '!ip4' => "INET_ATON($host_ip)",
+            '!ip4' => "INET_ATON('$host_ip')",
             'hosting' => $who->org,
             'reverse' => $reverse_name,
             'malware' => $domain->flags];
