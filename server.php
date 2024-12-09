@@ -70,6 +70,9 @@ function read_stream($stream, $size=8192) {
     return $data;
 }
 
+function not_azure(Edge $edge) : bool {
+    return str_ends_with($edge->dst, "azure.com");
+}
 
 
 /**
@@ -89,7 +92,6 @@ function parse_line($line) : MaybeO {
 
     $src = $parts[8];
     $host = $parts[6];
-    $domain = get_domain($host);
     return MaybeO::of(new Edge($src, $host, time()));
 }
 
@@ -162,8 +164,9 @@ try {
         $line = fgets($pipe); // Read a single line
         if ($line !== false) {
             // Pass the line to the parsing function
-            $edge = parse_line(trim($line));
-            $edge->effect($queue_send_fn);
+            parse_line(trim($line))
+                ->keep_if('not_azure')
+                ->effect($queue_send_fn);
         }
     }
 } finally {
