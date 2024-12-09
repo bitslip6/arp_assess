@@ -727,7 +727,7 @@ while (true) {
 
     // the edge
     $edge_key = "$host:$domain:443";
-    if (!isset($cache_edge[$edge_key]) || $cache_edge[$edge_key]->last + 300 < time()) {
+    if (!isset($cache_edge[$edge_key]) || ($cache_edge[$edge_key]->last->getTimeStamp() + 300) < time()) {
 
         $now = new DateTime('now');
         $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND remote_id = {remote_id} AND dst_port = 443", ['local_id' => $local_node->id, 'remote_id' => $remote_node_id]);
@@ -749,6 +749,7 @@ while (true) {
             $histogram = setBit($bits, $curr_bucket);
             $edge_id = $db->update("remote_edge", ['histogram' => $histogram], ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port', 443]);
             echo " -! update edge $edge_id ($histogram)\n";
+            $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, new DateTime($domain_sql->col('last')()), $now);
         }
         $cache_edge[$edge_key] = $edge;
     }
