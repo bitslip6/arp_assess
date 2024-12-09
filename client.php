@@ -114,11 +114,10 @@ function get_ethernet(string $ipAddress): ?string {
 
 // load file into a map
 function file_keys(string $filename) : array {
-    echo "loading file: [$filename]\n";
     $result = [];
     $x = fopen($filename, "r");
     while ($line = fgets($x)) {
-        $result[$line] = 1;
+        $result[trim($line)] = 1;
     }
     return $result;
 }
@@ -438,7 +437,8 @@ function is_whitelist(string $domain) : bool {
         $age = time();
         gc_collect_cycles();
     }
-    return isset($list[$domain]);
+    $w = isset($list[$domain]);
+	return $w;
 }
 
 
