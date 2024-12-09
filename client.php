@@ -159,9 +159,11 @@ class Whois_Info {
 function setBit(string $bits, int $bucket): string {
     $byteIndex = intdiv($bucket, 8);
     $bitIndex = $bucket % 8;
+
     
     $byte = ord($bits[$byteIndex]);
     $byte |= (1 << $bitIndex);
+    echo " ($byteIndex / $bitIndex) = $byte\n";
     $bits[$byteIndex] = chr($byte);
     return $bits;
 }
@@ -738,15 +740,17 @@ while (true) {
             $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port' => 443, 'histogram' => $histogram]);
             echo " !- create insert edge: $edge_id ($histogram)\n";
 	        print_r($db);
+            $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, $now, $now);
         } else {
             $last_bucket = get_bucket_index(new DateTime($domain_sql->col('last')()));
             $bits = $domain_sql->col('histogram')();
+            echo " =-= $last_bucket, $curr_bucket\n";
             $bits = clearRange($bits, $last_bucket + 1, $curr_bucket - 1);
-            $bits = setBit($bits, $curr_bucket);
-            $edge_id = $db->update("remote_edge", ['histogram' => $bits], ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port', 443]);
-            echo " -! update edge $edge_id ($bits)\n";
+            $histogram = setBit($bits, $curr_bucket);
+            $edge_id = $db->update("remote_edge", ['histogram' => $histogram], ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port', 443]);
+            echo " -! update edge $edge_id ($histogram)\n";
         }
-        $cache_edge[$edge_key] = time();
+        $cache_edge[$edge_key] = $edge;
     }
     
 }
