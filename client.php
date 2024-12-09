@@ -623,21 +623,6 @@ echo "DB Connected\n";
 //public function bulk_fn(string $table, array $columns, bool $ignore_duplicate = true) : callable { 
 
 $domain_fn = $db->upsert_fn("domain");
-
-	/*
-$domain_fn = function(array $data) use ($db) {
-    $sql = $db->fetch("SELECT id FROM registrar WHERE registrar = {registrar}", $data);
-    if ($sql->count() < 1) {
-        $reg_id = $db->insert('registrar', ['id' => NULL, 'registrar' => $data['registrar']], DB_DUPLICATE_IGNORE);
-    } else {
-        $reg_id = $sql->col('id')();
-    }
-
-    $data['registrar'] = $reg_id;
-    $domain_id = $db->insert("domain", $data);
-};
-    */
-
 $registrar_fn = $db->upsert_fn("registrar");
 
 echo "Loading OUI Data\n";
@@ -659,11 +644,18 @@ $cache_src = [];
 $cache_edge = [];
 
 $local_fn = $db->upsert_fn("locals");
+$host_fn = $db->upsert_fn("host");
 while (true) {
     $message     = $queue->convert($recv_fn);
     $host_name   = $message['dst'];
+<<<<<<< HEAD
     if (str_ends_with($host_name, "in-addr.arpa")) {
         echo "Reverse ADDR lookup skip\n";
+=======
+	if (str_ends_with($host_name, "in-addr.arpa")) {
+        echo "Reverse ADDR lookup skip\n";
+		continue;
+>>>>>>> 8cbabac106ea0bdf01d1712abd10c247a0c563dd
     }
     $domain_name = get_domain($host_name);
     $host_ip     = $message['src'];
