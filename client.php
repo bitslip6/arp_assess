@@ -107,7 +107,7 @@ function get_ethernet(string $ipAddress): ?string {
 
     // Check if output contains a valid MAC address
     if (preg_match('/(?:[0-9a-f]{2}:){5}[0-9a-f]{2}/i', $output, $matches)) {
-        return $matches[0]; // Return the MAC address
+        return strtoupper($matches[0]); // Return the MAC address
     }
 
     return null; // MAC address not found
@@ -613,20 +613,30 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $note .= " WHITELIST, ";
     } else if (strlen($config['alien_api']) > 20) {
         // get malware details from alienware
-        echo "alient vault search $domain\n";
+        echo "alien vault search $domain\n";
         $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
         $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
         $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
 		if (strlen($content) > 10) {
 			$alien = json_decode($content, true);
 			if ($alien == false) {
-				print_r($content);
-				echo ("\n\nERROR DECODING ALIEN VAULT DATA!\n");
+				echo "$content\n";
+				echo ("\n\nERROR DECODING ALIEN VAULT DATA! " . strlen($content) . "\n");
 			}
 			if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
 				$count = intval($alien['pulse_info']['count']);
 				echo "alien pulse count: $domain ($count)\n";
 				if ($count > 0) {
+                    if (isset($alien['validation']) && count($alien['validation']) > 0) {
+                        foreach ($alien['validation'] as $validate) {
+                            if (isset($validate['source']) && $validate['source'] == 'whitelist') {
+                                echo " ~~~~~ alien whitelist\n";
+                                $score = 1.0;
+                                $flags += VAL_WHITELIST;
+                                $note .= " WHITELIST, ";
+                            }
+                        }
+                    }
 					$score += map_weighted_value($count);
 					$flags += VAL_ALIEN;
 				}
@@ -697,6 +707,9 @@ $ether_map = [];
 while($l = fgets($o)) {
     $p = explode(",", $l);
     $ether_map[trim($p[0])] = trim($p[1]);
+    if (mt_rand(1,5000) == 2) {
+        echo trim($p[0]) . "=" . trim($p[1]) . "\n";
+    }
 }
 $sz = count($ether_map);
 
@@ -725,6 +738,7 @@ while (true) {
         $ethernet = get_ethernet($host_ip);
         $prefix   = substr($ethernet, 0, 8);
         $host     = gethostbyaddr($host_ip);
+        echo "lookup [$prefix]\n";
         $oui_name = $ether_map[$prefix]??'unknown';
         $data = [
             'id' => NULL,
