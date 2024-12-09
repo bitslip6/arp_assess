@@ -162,7 +162,7 @@ function setBit(string $bits, int $bucket): string {
     
     $byte = ord($bits[$byteIndex]);
     $byte |= (1 << $bitIndex);
-    echo " ($byteIndex / $bitIndex) = $byte\n";
+    echo " =-= $bucket ($byteIndex / $bitIndex) = $byte\n";
     $bits[$byteIndex] = chr($byte);
     return $bits;
 }
@@ -735,15 +735,19 @@ while (true) {
         echo " !- load edge [$curr_bucket]\n";
         print_r($domain_sql);
         if ($domain_sql->count() <= 0) {
-            $histogram = str_pad("\0", 254, "\0");
+            $histogram = str_pad("\0", 253, "\0");
+            $histogram .= "\1";
             $histogram = setBit($histogram, $curr_bucket);
             $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443, 'histogram' => $histogram, 'first' => null, 'last' => null]);
             echo " !- create insert edge: $edge_id ($histogram)\n";
-	        print_r($db);
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, $now, $now);
         } else {
             $last_bucket = get_bucket_index(new DateTime($domain_sql->col('last')()));
             $bits = $domain_sql->col('histogram')();
+            if (empty($bits)) {
+                $bits = str_pad("\0", 253, "\0");
+                $bits .= "\1";
+            }
             echo " =-= $last_bucket, $curr_bucket\n";
             $bits = clearRange($bits, $last_bucket + 1, $curr_bucket - 1);
             $histogram = setBit($bits, $curr_bucket);
