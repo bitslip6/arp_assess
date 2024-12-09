@@ -534,38 +534,47 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     $has_dkim   = (str_contains(join(", ", $dkim), "DMARC")) ? true : false;
 
     $score  = 0.0;
+    $note = "";
     if ($has_spf) {
         $score += 1.4;
         $flags += VAL_SPF;
+        $note .= " SPF, ";
     }
     if ($has_google) {
         $score += 1.2;
         $flags += VAL_GOOGLE;
+        $note .= " GOOGLE, ";
     }
     if ($has_dkim) {
         $score += 1.1;
         $flags += VAL_DKIM;
+        $note .= " DKIM, ";
     }
     $score += domain_age_to_score(time() - strtotime($who->created));
     if (is_abuseip($ip)) {
         $score += 10.0;
         $flags += VAL_ABUSE_IP;
+        $note .= " ABUSE, ";
     }
     if (is_majestic($ip)) {
         $score -= 1.5;
         $flags += VAL_TOPMIL;
+        $note .= " MAJESTIC, ";
     }
     if (is_phish($domain)) {
         $score += 12.0;
         $flags += VAL_PHISH;
+        $note .= " PHISH, ";
     }
     if ($who->cloudflare) {
         $flags += VAL_CLOUDFLARE;
+        $note .= " CLOUD, ";
     }
 
     if (is_whitelist($domain)) {
         $score = 1.0;
         $flags += VAL_WHITELIST;
+        $note .= " WHITELIST, ";
     } else if (strlen($config['alien_api']) > 20) {
         // get malware details from alienware
         echo "alient vault search $domain\n";
@@ -587,11 +596,12 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
 				}
 			}
 		}
-    }
+	}
 
     $reg_id = $registrar_fn([NULL, $who->registrar]);
     $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags]);
     echo " - ID: $domain_id - insert domain ($reg_id) : {$domain} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $score, {$flags} \n";
+    echo " ----- $domain [$note]\n";
     $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $flags);
     return $domain;
 }

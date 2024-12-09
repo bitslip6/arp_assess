@@ -70,8 +70,11 @@ function read_stream($stream, $size=8192) {
     return $data;
 }
 
-function not_azure(Edge $edge) : bool {
-    return str_ends_with($edge->dst, "azure.com");
+function not_azure(?Edge $edge) : bool {
+	if (empty($edge) || str_ends_with($edge->dst, "azure.com")) {
+		return false;
+	}
+	return true;
 }
 
 
