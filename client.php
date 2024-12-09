@@ -579,59 +579,59 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     if (! $has_spf) {
         $score += 1.4;
         $flags += VAL_SPF;
-        $note .= " SPF, ";
+        $note .= "SPF,";
     }
     if (! $has_google) {
         $score += 1.2;
         $flags += VAL_GOOGLE;
-        $note .= " GOOGLE, ";
+        $note .= "GOG,";
     }
     if (! $has_dkim) {
         $score += 1.1;
         $flags += VAL_DKIM;
-        $note .= " DKIM, ";
+        $note .= "DKM,";
     }
     // if we know the domain creation time, and it looks created recently, add to the score
     $time = strtotime($who->created);
     if ($time > time() - (86400*400) && $time < time()) {
         $score += domain_age_to_score(time() - strtotime($who->created));
-        $note .= " DOMSCORE: $score, ";
+        $note .= "DOMSC:$score,";
     }
     if ($who->cloudflare) {
         $flags += VAL_CLOUDFLARE;
-        $note .= " CLOUD, ";
+        $note .= "FLAR,";
     }
     if (is_abuseip($ip)) {
         $score += 10.0;
         $flags += VAL_ABUSE_IP;
-        $note .= " ABUSE, ";
+        $note .= "ABUSE,";
     }
     if (is_majestic($ip)) {
         $score -= 1.5;
         $flags += VAL_TOPMIL;
-        $note .= " MAJESTIC, ";
+        $note .= "MAJ,";
     }
     if (is_whitelist($domain)) {
         $score = 1.0;
         $flags += VAL_WHITELIST;
-        $note .= " WHITELIST, ";
+        $note .= "WHIT,";
     }
     else if (is_tracking($host) || is_tracking($domain)) {
         $score += 1.1;
         $flags += VAL_TRACKING;
-        $note .= " TRACKING HOST, ";
+        $note .= "TRK,";
     } // spammy domains
     else if (is_warning($domain) || is_warning($host)) {
         $score += 2.3;
         $flags += VAL_WARNING;
-        $note .= " WARNING DOMAIN, ";
+        $note .= "WARN,";
     } else {
     
         // don't mark spammy domains as phishing....
         if (is_phish($domain)) {
             $score += 12.0;
             $flags += VAL_PHISH;
-            $note .= " PHISH, ";
+            $note .= "PHISH,";
         }
 
         // unknown ... check alien vault
@@ -657,12 +657,18 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
                                     echo " ~~~~~ alien whitelist\n";
                                     $score = 1.0;
                                     $flags += VAL_WHITELIST;
-                                    $note .= " WHITELIST, ";
+                                    $note .= "AWHIT,";
+                                    break;
                                 }
                             }
                         }
-                        $score += map_weighted_value($count);
-                        $flags += VAL_ALIEN;
+                        // map alien vault scor0e
+                        // TODO: filter out pulses that are tracking or whitelist...
+                        if (! ($flags & VAL_WHITELIST)) {
+                            $score += map_weighted_value($count);
+                            $note .= "ALIEN,";
+                            $flags += VAL_ALIEN;
+                        }
                     }
                 }
             }
@@ -672,7 +678,7 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     $reg_id = $registrar_fn([NULL, $who->registrar]);
     $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags]);
     echo " - ID: $domain_id - insert domain ($reg_id) : {$domain} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $score, {$flags} \n";
-    echo " ----- $domain [$note]\n";
+    echo " ----- $domain_id ($domain} {$who->expires} [$note]\n";
     $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $flags);
     return $domain;
 }
@@ -784,7 +790,7 @@ while (true) {
     // the remote domain
     // TODO: need to pull malware state from dump_to_db
     if (!isset($cache_dst[$domain_name])) {
-        $cache_dst[$domain_name] = dump_to_db($domain_fn, $registrar_fn, $config, $host);
+        $cache_dst[$domain_name] = dump_to_db($domain_fn, $registrar_fn, $config, $host_name);
     }
     $domain = $cache_dst[$domain_name];
     echo " + Load domain: $domain\n";
