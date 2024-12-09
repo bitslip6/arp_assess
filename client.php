@@ -717,9 +717,9 @@ while (true) {
         echo " - create remote host: $host_id - $host_ip, $host_name, {$who->org}\n";
         $cache_dst[$host_name] = $host_id;
     }
-    $remote_node = $cache_dst[$host_name]??NULL;
+    $remote_node_id = $cache_dst[$host_name]??NULL;
     echo " + Load node: $local_node\n";
-    ASSERT($remote_node instanceOf domain, "Internal error: remote node not created.");
+    ASSERT($remote_node_id > 0, "Internal error: remote node not created.");
 
 
 
@@ -728,15 +728,15 @@ while (true) {
     if (!isset($cache_edge[$edge_key]) || $cache_edge[$edge_key]->last + 300 < time()) {
 
         $now = new DateTime('now');
-        $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND remote_id = {remote_id} AND dst_port = 443", ['local_id' => $local_id, 'remote_id' => $domain_id]);
+        $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND remote_id = {remote_id} AND dst_port = 443", ['local_id' => $local_node->id, 'remote_id' => $remote_node_id]);
         $curr_bucket = get_bucket_index($now);
-        echo " - load edge [$curr_bucket]\n";
+        echo " !- load edge [$curr_bucket]\n";
         print_r($domain_sql);
         if ($domain_sql->count() <= 0) {
             $histogram = str_pad("\0", 254, "\0");
             $histogram = setBit($histogram, $curr_bucket);
             $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port' => 443, 'histogram' => $histogram]);
-            echo " - create insert edge: $edge_id ($histogram)\n";
+            echo " !- create insert edge: $edge_id ($histogram)\n";
 	        print_r($db);
         } else {
             $last_bucket = get_bucket_index(new DateTime($domain_sql->col('last')()));
@@ -744,7 +744,7 @@ while (true) {
             $bits = clearRange($bits, $last_bucket + 1, $curr_bucket - 1);
             $bits = setBit($bits, $curr_bucket);
             $edge_id = $db->update("remote_edge", ['histogram' => $bits], ['local_id' => $local_id, 'host_id' => $domain_id, 'dst_port', 443]);
-            echo " -# update edge $edge_id ($bits)\n";
+            echo " -! update edge $edge_id ($bits)\n";
         }
         $cache_edge[$edge_key] = time();
     }
