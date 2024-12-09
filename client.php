@@ -35,6 +35,7 @@ const BIT_DKIM = 12;
 const BIT_GOOGLE = 13;
 const BIT_CLOUDFLARE = 14;
 const BIT_WHITELIST = 15;
+const BIT_TRACKING = 16;
 
 const VAL_HOSTING = 1 << BIT_HOSTING;
 const VAL_FIRE_TRACK = 1 << BIT_FIRE_TRACK;
@@ -51,6 +52,7 @@ const VAL_DKIM = 1 << BIT_DKIM;
 const VAL_GOOGLE = 1 << BIT_GOOGLE;
 const VAL_CLOUDFLARE = 1 << BIT_CLOUDFLARE;
 const VAL_WHITELIST = 1 << BIT_WHITELIST;
+const VAL_TRACKING = 1 << BIT_TRACKING;
 
 
 class local {
@@ -432,6 +434,21 @@ function is_phish(string $domain) : bool {
 }
 
 /**
+ * return true if host is a tracking host
+ */
+function is_tracking(string $host) : bool {
+    static $list = NULL; 
+    static $age = -1; 
+    if ($list == NULL or $age < time() - 86400*2) {
+        $list = file_keys("malware/tracking.txt");
+        $age = time();
+        gc_collect_cycles();
+    }
+    return isset($list[$host]);
+}
+
+
+/**
  * TODO: need to move this to host info...
  * TODO: need to add all hosting domains to whitelist
  * TODO: need to handle hosting domains differently...
@@ -542,7 +559,8 @@ function map_weighted_value($input) {
 /**
  * @param callable $domain_fn function to write domain to database
  */
-function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, string $domain) : domain {
+function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, string $host) : domain {
+    $domain   = get_domain($host);
     $ip       = gethostbyname($domain);
     $who      = find_whois($domain);
     $parts    = explode(".", $domain);
@@ -579,6 +597,10 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $score += domain_age_to_score(time() - strtotime($who->created));
         $note .= " DOMSCORE: $score, ";
     }
+    if ($who->cloudflare) {
+        $flags += VAL_CLOUDFLARE;
+        $note .= " CLOUD, ";
+    }
     if (is_abuseip($ip)) {
         $score += 10.0;
         $flags += VAL_ABUSE_IP;
@@ -589,60 +611,63 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $flags += VAL_TOPMIL;
         $note .= " MAJESTIC, ";
     }
-    // spammy domains
-    if (is_warning($domain)) {
-        $score += 2.3;
-        $flags += VAL_WARNING;
-        $note .= " WARNING DOMAIN, ";
-    }
-    // don't mark spammy domains as phishing....
-    else if (is_phish($domain)) {
-        $score += 12.0;
-        $flags += VAL_PHISH;
-        $note .= " PHISH, ";
-    }
-    if ($who->cloudflare) {
-        $flags += VAL_CLOUDFLARE;
-        $note .= " CLOUD, ";
-    }
-
-    // white list domain
     if (is_whitelist($domain)) {
         $score = 1.0;
         $flags += VAL_WHITELIST;
         $note .= " WHITELIST, ";
-    } else if (strlen($config['alien_api']) > 20) {
-        // get malware details from alienware
-        echo "alien vault search $domain\n";
-        $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
-        $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
-        $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
-		if (strlen($content) > 10) {
-			$alien = json_decode($content, true);
-			if ($alien == false) {
-				echo "$content\n";
-				echo ("\n\nERROR DECODING ALIEN VAULT DATA! " . strlen($content) . "\n");
-			}
-			if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
-				$count = intval($alien['pulse_info']['count']);
-				echo "alien pulse count: $domain ($count)\n";
-				if ($count > 0) {
-                    if (isset($alien['validation']) && count($alien['validation']) > 0) {
-                        foreach ($alien['validation'] as $validate) {
-                            if (isset($validate['source']) && $validate['source'] == 'whitelist') {
-                                echo " ~~~~~ alien whitelist\n";
-                                $score = 1.0;
-                                $flags += VAL_WHITELIST;
-                                $note .= " WHITELIST, ";
+    }
+    else if (is_tracking($host) || is_tracking($domain)) {
+        $score += 1.1;
+        $flags += VAL_TRACKING;
+        $note .= " TRACKING HOST, ";
+    } // spammy domains
+    else if (is_warning($domain) || is_warning($host)) {
+        $score += 2.3;
+        $flags += VAL_WARNING;
+        $note .= " WARNING DOMAIN, ";
+    } else {
+    
+        // don't mark spammy domains as phishing....
+        if (is_phish($domain)) {
+            $score += 12.0;
+            $flags += VAL_PHISH;
+            $note .= " PHISH, ";
+        }
+
+        // unknown ... check alien vault
+        else if (strlen($config['alien_api']) > 20) {
+            // get malware details from alienware
+            echo "alien vault search $domain\n";
+            $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
+            $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
+            $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
+            if (strlen($content) > 10) {
+                $alien = json_decode($content, true);
+                if ($alien == false) {
+                    echo "$content\n";
+                    echo ("\n\nERROR DECODING ALIEN VAULT DATA! " . strlen($content) . "\n");
+                }
+                if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
+                    $count = intval($alien['pulse_info']['count']);
+                    echo "alien pulse count: $domain ($count)\n";
+                    if ($count > 0) {
+                        if (isset($alien['validation']) && count($alien['validation']) > 0) {
+                            foreach ($alien['validation'] as $validate) {
+                                if (isset($validate['source']) && $validate['source'] == 'whitelist') {
+                                    echo " ~~~~~ alien whitelist\n";
+                                    $score = 1.0;
+                                    $flags += VAL_WHITELIST;
+                                    $note .= " WHITELIST, ";
+                                }
                             }
                         }
+                        $score += map_weighted_value($count);
+                        $flags += VAL_ALIEN;
                     }
-					$score += map_weighted_value($count);
-					$flags += VAL_ALIEN;
-				}
-			}
-		}
-	}
+                }
+            }
+        }
+    }
 
     $reg_id = $registrar_fn([NULL, $who->registrar]);
     $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags]);
@@ -759,7 +784,7 @@ while (true) {
     // the remote domain
     // TODO: need to pull malware state from dump_to_db
     if (!isset($cache_dst[$domain_name])) {
-        $cache_dst[$domain_name] = dump_to_db($domain_fn, $registrar_fn, $config, $domain_name);
+        $cache_dst[$domain_name] = dump_to_db($domain_fn, $registrar_fn, $config, $host);
     }
     $domain = $cache_dst[$domain_name];
     echo " + Load domain: $domain\n";
@@ -777,6 +802,7 @@ while (true) {
             '!ip4' => "INET_ATON('$remote_ip')",
             'hosting' => $who->org,
             'reverse' => $reverse_name,
+            'domain_id' => $domain->id,
             'malware' => $domain->flags];
         $host_id = $host_fn($data);
         echo " - create remote host: $host_id - $host_ip, $host_name, {$who->org}\n";
@@ -801,7 +827,7 @@ while (true) {
             $histogram = str_pad("\0", 253, "\0");
             $histogram .= "\1";
             $histogram = setBit($histogram, $curr_bucket);
-            $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443, 'histogram' => $histogram, 'first' => null, 'last' => null]);
+            $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443, 'histogram' => $histogram, '!first' => 'now()', '!last' => 'now()']);
             echo " !- create insert edge: $edge_id ($histogram)\n";
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, $now, $now);
         } else {
