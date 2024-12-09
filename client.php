@@ -676,7 +676,7 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     }
 
     $reg_id = $registrar_fn([NULL, $who->registrar]);
-    $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags]);
+    $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags, $note]);
     echo " - ID: $domain_id - insert domain ($reg_id) : {$domain} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $score, {$flags} \n";
     echo " ----- $domain_id ($domain} {$who->expires} [$note]\n";
     $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $flags);
