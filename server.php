@@ -87,14 +87,12 @@ function not_azure(?Edge $edge) : bool {
 function parse_line($line) : MaybeO {
     $parts = explode(" ", $line);
 
-    if (count($parts) < 8 || !str_contains($parts[5], "query[")) {
-	// echo $parts[4] . " " . count($parts) . "\n";
-	//print_r($line);
+    if (count($parts) < 7 || !str_contains($parts[4], "query[")) {
         return MaybeO::of(NULL);
     }
 
-    $src = $parts[8];
-    $host = $parts[6];
+    $src = $parts[7];
+    $host = $parts[5];
     return MaybeO::of(new Edge($src, $host, time()));
 }
 
