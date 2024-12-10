@@ -24,6 +24,10 @@ use \ThreadFin\Core\Maybe as Maybe;
 
 use const ThreadFin\DB\DB_DUPLICATE_IGNORE;
 use const ThreadFin\DB\DB_DUPLICATE_UPDATE;
+use const ThreadFin\DB\DB_FETCH_INSERT_ID;
+use const ThreadFin\DB\DB_FETCH_NUM_ROWS;
+use const ThreadFin\DB\DB_FETCH_SUCCESS;
+use ThreadFin\DB\SQL as SQL;
 
 use function \ThreadFin\Util\panic_if as panic_if;
 use function \ThreadFin\Util\not as not;
@@ -92,6 +96,20 @@ class domain {
         public int $flags,
         public int $category
     ) {}
+
+    public static function from_sql(SQL $result) : domain {
+        $x = $result->_x;
+        $domain = new domain(
+            $x['id'],
+            $x['domain'],
+            new DateTime($x['created']), 
+            new DateTime($x['expires']), 
+            $x['registrar'],
+            $x['score'],
+            $x['malware'],
+            $x['category_id']);
+        return $domain;
+    }
 
     public function __toString() : string {
         return "Domain[{$this->id}] {$this->domain}({$this->created->format('Y-m-d')}) {$this->score} ({$this->flags})";
@@ -507,7 +525,7 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     echo "    @@ dump domain: $domain, $ip, ($rank)\n";
     $raw_net  = cache_http("net_cache", (86400*30), "GET", "https://informatics.netify.ai/api/v2/lookup/domains/$domain");
     $net_data = json_decode($raw_net, true);
-    $cat_id   = $net_data['data']['category']['id'] ?? 0;
+    $cat_id   = $net_data['data']['category']['id'] ?? 254;
     
 
 
@@ -659,7 +677,7 @@ $domain_fn    = $db->upsert_fn("domain");
 $registrar_fn = $db->upsert_fn("registrar");
 $local_fn     = $db->upsert_fn("locals");
 $host_fn      = $db->upsert_fn("host");
-$r_edge_fn    = $db->upsert_fn("remote_edge");
+//$r_edge_fn    = $db->upsert_fn("remote_edge");
 
 echo "~ DB functions created\n";
 
@@ -673,6 +691,10 @@ $sz = count($ether_map);
 
 
 echo "# Reading Messages...\n";
+$empty_bits = '';
+for ($i=0; $i<253; $i++) {
+    $empty_bits .= chr(0);
+}
 while (true) {
     $message     = $queue->convert('recieve_message');
     $host_name   = $message['dst'];
@@ -708,11 +730,17 @@ while (true) {
 
     // the remote domain
     if (!isset($cache_dst[$domain_name])) {
-        $domain = dump_to_db($domain_fn, $registrar_fn, $config, $host_name);
-        if ($domain->id < 1) {
-            echo "ERR: dumping domain to db: [$host_name]\n";
-            print_r($db->errors);
-            $db->errors = [];
+        $res = $db->fetch("SELECT * FROM domain WHERE domain = {name}", ["name" => $domain_name]);
+        if ($res->empty()) {
+            $domain = dump_to_db($domain_fn, $registrar_fn, $config, $host_name);
+            if ($domain->id < 1) {
+                echo "ERR: dumping domain to db: [$host_name]\n";
+                print_r($db->errors);
+                $db->errors = [];
+            }
+        } else {
+            $domain = domain::from_sql($res);
+            echo "Loaded DOMAIN: $domain\n";
         }
         $cache_dst[$domain_name] = $domain;
     }
@@ -755,16 +783,18 @@ while (true) {
     $edge_key = "$host:$domain:443";
     if (!isset($cache_edge[$edge_key]) || ($cache_edge[$edge_key]->last->getTimeStamp() + 300) < time()) {
 
-        $empty_bits = str_pad("\0", 253, "\0");
         $now = new DateTime('now');
         $curr_bucket = get_bucket_index($now);
         echo "EDGE- {$local_node->id}->{$remote_node_id} @$curr_bucket\n";
         $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND host_id = {remote_id} AND dst_port = 443", ['local_id' => $local_node->id, 'remote_id' => $remote_node_id]);
         if ($domain_sql->count() <= 0) {
             $histogram = setBit($empty_bits, $curr_bucket);
-            $edge_id = $r_edge_fn(['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443, 'histogram' => $histogram, '!first' => 'now()', '!last' => 'now()']);
-            echo "STMT: $db->last_stmt\n";
-            echo " !- create insert edge: $edge_id ($histogram)\n";
+            $success = $db->insert("remote_edge", ['histogram' => $histogram, 'local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443], DB_FETCH_SUCCESS);
+            if (!$success) {
+                print_r($db->errors);
+                $db->errors = [];
+                echo "ERR inserting remote_edge\n";
+            }
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, $now, $now);
         } else {
             $last_bucket = get_bucket_index(new DateTime($domain_sql->col('last')()));
@@ -775,12 +805,11 @@ while (true) {
             echo " =-= {$domain_sql->col('last')()} $last_bucket, $curr_bucket\n";
             $bits = clearRange($bits, $last_bucket + 1, $curr_bucket - 1);
             $histogram = setBit($bits, $curr_bucket);
-            $edge_id = $db->update("remote_edge", ['histogram' => $histogram, '!last' => 'now()'], ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443]);
-            if ($edge_id < 1) {
+            $num_rows = $db->update("remote_edge", ['histogram' => $histogram], ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443], DB_FETCH_NUM_ROWS);
+            if ($num_rows < 1) {
                 print_r($db->errors);
                 $db->errors = [];
             }
-            echo " -! update edge_id: $edge_id lid:$local_id, rid:$remote_node_id ($histogram)\n";
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, new DateTime($domain_sql->col('last')()), $now);
         }
         $cache_edge[$edge_key] = $edge;
