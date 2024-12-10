@@ -2,11 +2,13 @@
 
 /**
  * NOTES: need to update phishing from hosting domains and link shortener domains, etc
+ * 
+ * select h.hostname, inet_ntoa(h.ip4), h.malware, l.iptxt, l.hostname, l.ether_type, e.first, e.last, d.score, d.note, r.registrar from host as h join remote_edge as e on e.host_id = h.id join locals as l on e.local_id = l.id join domain as d on h.domain_id = d.id join registrar as r on d.registrar = r.id where (h.malware & 1<<6) > 0 or (d.malware & 1<<6) > 0;
  */
 
 use ThreadFin\DB\DB;
 
-ini_set('zend.assertions', '1');
+// ini_set('zend.assertions', '1');
 ini_set('assert.active', '1');
 ini_set('assert.warning', '1');
 ini_set('assert.exception', '1');
@@ -14,6 +16,7 @@ ini_set('assert.exception', '1');
 require "threadfin/core.php";
 require "threadfin/db.php";
 require "threadfin/http.php";
+require "common.php";
 
 use \ThreadFin\Core\MaybeStr as MaybeStr;
 use \ThreadFin\Core\MaybeO as MaybeO;
@@ -87,6 +90,7 @@ class domain {
         public string $registrar,
         public float $score,
         public int $flags,
+        public int $category
     ) {}
 
     public function __toString() : string {
@@ -109,30 +113,6 @@ class edge {
         return "Edge[{$this->local_id}:{$this->remote_id}:{$this->dst_port}] {$this->histogram}";
     }
 };
-
-function get_ethernet(string $ipAddress): ?string {
-    // Execute the 'arp' command
-    $output = shell_exec("ip neigh show $ipAddress 2>/dev/null");
-
-    // Check if output contains a valid MAC address
-    if (preg_match('/(?:[0-9a-f]{2}:){5}[0-9a-f]{2}/i', $output, $matches)) {
-        return strtoupper($matches[0]); // Return the MAC address
-    }
-
-    return null; // MAC address not found
-}
-
-
-// load file into a map
-function file_keys(string $filename) : array {
-    $result = [];
-    $x = fopen($filename, "r");
-    $ctr = 1;
-    while ($line = fgets($x)) {
-        $result[trim($line)] = $ctr++;
-    }
-    return $result;
-}
 
 class Whois_Info {
     public string $city = "";
@@ -161,94 +141,41 @@ class Whois_Info {
 
 
 /**
- * Set a specific bit in a binary string.
- *
- * @param string $bits   The binary string (36 bytes).
- * @param int    $bucket The bucket index to set.
- * @return string The modified binary string.
- */
-function setBit(string $bits, int $bucket): string {
-    $byteIndex = intdiv($bucket, 8);
-    $bitIndex = $bucket % 8;
-
-    
-    $byte = ord($bits[$byteIndex]);
-    $byte |= (1 << $bitIndex);
-    echo " =-= $bucket ($byteIndex / $bitIndex) = $byte\n";
-    $bits[$byteIndex] = chr($byte);
-    return $bits;
-}
-
-/**
- * Unset a specific bit in a binary string.
- *
- * @param string $bits   The binary string (36 bytes).
- * @param int    $bucket The bucket index to unset.
- * @return string The modified binary string.
- */
-function unsetBit(string $bits, int $bucket): string {
-    $byteIndex = intdiv($bucket, 8);
-    $bitIndex = $bucket % 8;
-    
-    $byte = ord($bits[$byteIndex]);
-    $byte &= ~(1 << $bitIndex);
-    $bits[$byteIndex] = chr($byte);
-    return $bits;
-}
-
-/**
- * Clear all bits in a range [start, end] inclusive, handling empty or invalid ranges gracefully.
- *
- * @param string $bits  The binary string.
- * @param int    $start Start bucket index.
- * @param int    $end   End bucket index.
- * @return string The modified binary string.
- */
-function clearRange(string $bits, int $start, int $end): string {
-    if ($start > $end) {
-        return $bits; // No range to clear
-    }
-    for ($b = $start; $b <= $end; $b++) {
-        $bits = unsetBit($bits, $b);
-    }
-    return $bits;
-}
-
-
-/**
  * Get the bucket index (0-287) corresponding to a given DateTime.
  *
  * @param DateTime $dt The date-time object.
- * @return int Bucket index (0 to 287).
+ * @return int Bucket index (0 to 2009). - return 2010 if $dt was null
  */
-function get_bucket_index(DateTime $dt): int {
-    $secondsSinceMidnight = ($dt->format('H') * 3600) + ($dt->format('i') * 60) + $dt->format('s');
-    return intdiv($secondsSinceMidnight, 300); // 300s = 5min
+function get_bucket_index(?DateTime $dt): int {
+    if ($dt == null) {
+        return 2010;
+    }
+    $seconds_since_midnight = ($dt->format('H') * 3600) + ($dt->format('i') * 60) + $dt->format('s');
+    $day_offset = $dt->format('w') * 36;
+    $result = intdiv($day_offset + $seconds_since_midnight, 300); // 300s = 5min
+    ASSERT($result >= 0 && $result <= 2009, "ERR: edge bucket calculation incorrect, got [$result]");
+    return $result;
 }
-
 
 
 /**
- * Extract the domain name and TLD from a fully qualified domain name (FQDN).
- *
- * @param string $fqdn The fully qualified domain name.
- * @return string The domain name and TLD (e.g., "example.com").
+ * recieve a message from a message queue, and return array
  */
-function get_domain($fqdn) {
-    // Use PHP's parse_url to extract the host part if a URL is passed
-    $fqdn = parse_url($fqdn, PHP_URL_HOST) ?: $fqdn;
-
-    // Split the FQDN into parts
-    $parts = explode('.', $fqdn);
-
-    // If there are fewer than 2 parts, it is not a valid domain name
-    if (count($parts) < 2) {
-        return $fqdn; // Return as is (could be an IP or local name)
+function recieve_message(?SysvMessageQueue $queue) : ?array {
+    msg_receive($queue, 1, $type, 1024*32, $message, false, 0, $error);
+    if (empty($message)) {
+        echo "ERR: message queue recieve failed\n";
+        return null;
+    }
+    $msg = json_decode($message, true);
+    if (empty($msg)) {
+        echo "ERR: message decode failed\n";
+        return null;
     }
 
-    // Return the last two parts (domain and TLD)
-    return implode('.', array_slice($parts, -2));
-}
+    return $msg;
+};
+
 
 
 /**
@@ -577,7 +504,11 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     $dkim     = get_txt_records("_dkim.$domain");
     $flags    = 0;
     $rank     = is_majestic($domain);
-    echo "  @+ dump domain: $domain, $ip, ($rank)\n";
+    echo "    @@ dump domain: $domain, $ip, ($rank)\n";
+    $raw_net  = cache_http("net_cache", (86400*30), "GET", "https://informatics.netify.ai/api/v2/lookup/domains/$domain");
+    $net_data = json_decode($raw_net, true);
+    $cat_id   = $net_data['data']['category']['id'] ?? 0;
+    
 
 
     $has_google = (str_contains(join(", ", $txt), "google-site-verification")) ? true : false;
@@ -641,7 +572,7 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $flags += VAL_HOSTING;
         $note .= "CDN,";
     }
-     else {
+    else if (stristr($who->registrar, "markmonitor") === false) {
         // is this unknown domain phishing?
         if (is_phish($host) || is_phish($domain)) {
             $score += 12.0;
@@ -651,19 +582,18 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         // unknown ... check alien vault
         else if (strlen($config['alien_api']) > 20) {
             // get malware details from alienware
-            echo "alien vault search $domain\n";
+            // echo "alien vault search $domain\n";
             $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
             $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
             $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
             if (strlen($content) > 10) {
                 $alien = json_decode($content, true);
                 if ($alien == false) {
-                    echo "$content\n";
-                    echo ("\n\nERROR DECODING ALIEN VAULT DATA! " . strlen($content) . "\n");
+                    echo ("\n\nERROR DECODING ALIEN VAULT DATA! ($domain) resp len:" . strlen($content) . "\n");
                 }
                 if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
                     $count = intval($alien['pulse_info']['count']);
-                    echo "alien pulse count: $domain ($count)\n";
+                    echo "    @@ alien pulse count: $domain ($count)\n";
                     if ($count > 0) {
                         if (isset($alien['validation']) && count($alien['validation']) > 0) {
                             $score = 1.0;
@@ -696,95 +626,67 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         }
     }
 
-    $reg_id = $registrar_fn([NULL, $who->registrar]);
-    $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags, $note, $rank]);
-    echo " ----- DOMAIN_ID: $domain_id ($domain} {$who->expires} [$note]\n";
-    $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $flags);
+    $note     .= $net_data['data']['category']['tag'] ?? 'UNKN';
+    $reg_id    = $registrar_fn([NULL, $who->registrar]);
+    $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags, $note, $rank, $cat_id]);
+    echo "    @@ DOMAIN_ID: $domain_id ($domain} {$who->expires} [$note]\n";
+    $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $flags, $cat_id);
     return $domain;
 }
 
 
 gc_enable();
-$t = file_get_contents("config.json");
-$config = json_decode($t, true);
-$a = is_array($config);
-$n = not($a);
-panic_if($n, "Unable to parse config.json, copy config.sample to config.json and configure settings.");
+$config = json_decode(file_get_contents("config.json"), true);
+$a      = is_array($config);
+panic_if(not($a), "Unable to parse config.json, copy config.sample to config.json and configure settings.");
+echo "~ Config Loaded\n";
 
-$top_domains   = file_keys("malware/top.txt");
-
-
-// Open the named pipe for reading
-//$pipe = fopen($config['dnsmasq_log'], 'r');
-//panic_if(not(is_resource($pipe)), "Error: Unable to open named pipe {$config['dnsmasq_log']}.\n");
-//echo "Listening for input on the named pipe: {$config['dnsmasq_log']}\n";
-//die();
-
-$queue_id = ftok('config.json', 'R');
-$queue = MaybeO::of(msg_get_queue($queue_id, 0666));
-echo "Config Loaded\n";
-
-$recv_fn = function($queue) {
-    msg_receive($queue, 1, $type, 1024*32, $message, false, 0, $error);
-    if (empty($message)) {
-        echo "message queue recieve failed\n";
-        return;
-    }
-    $msg = json_decode($message, true);
-    if (empty($msg)) {
-        echo "message decode failed\n";
-        return;
-    }
-
-    return $msg;
-};
-
+$queue  = MaybeO::of(msg_get_queue(ftok('config.json', 'R'), 0666));
+echo "~ Msg Queue Connected\n";
 
 $db = DB::connect($config['db_host'], $config['db_user'], $config['db_pass'], $config['db_name']);
-$db->enable_log(true);
-echo "DB Connected\n";
+$db->enable_log(false);
+echo "~ DB Connected\n";
 
-//public function bulk_fn(string $table, array $columns, bool $ignore_duplicate = true) : callable { 
 
-$domain_fn = $db->upsert_fn("domain");
+$ether_map  = [];
+$cache_dst  = [];
+$cache_host = [];
+$cache_src  = [];
+$cache_edge = [];
+
+$domain_fn    = $db->upsert_fn("domain");
 $registrar_fn = $db->upsert_fn("registrar");
+$local_fn     = $db->upsert_fn("locals");
+$host_fn      = $db->upsert_fn("host");
+echo "~ DB functions created\n";
 
-echo "Loading OUI Data\n";
-//$oui = file('oui.csv');
+echo "# Loading OUI Data...\n";
 $o = fopen("oui.csv", "r");
-$ether_map = [];
 while($l = fgets($o)) {
     $p = explode(",", $l);
     $ether_map[trim($p[0])] = trim($p[1]);
-    if (mt_rand(1,5000) == 2) {
-        echo trim($p[0]) . "=" . trim($p[1]) . "\n";
-    }
 }
 $sz = count($ether_map);
 
-echo "Db connected, Insert FN created\n";
-// echo "domain fn [$domain_fn]\n";
 
-$cache_dst = [];
-$cache_host = [];
-$cache_src = [];
-$cache_edge = [];
-
-$local_fn = $db->upsert_fn("locals");
-$host_fn = $db->upsert_fn("host");
+echo "# Reading Messages...\n";
 while (true) {
-    $message     = $queue->convert($recv_fn);
+    $message     = $queue->convert('recieve_message');
     $host_name   = $message['dst'];
-	if (str_ends_with($host_name, "in-addr.arpa")) {
-        echo "Reverse ADDR lookup skip\n";
-		continue;
-    }
     $domain_name = get_domain($host_name);
     $host_ip     = $message['src'];
+	if (str_ends_with($host_name, "in-addr.arpa")) {
+        echo "Reverse ADDR lookup skip: [$host_name]\n";
+		continue;
+    }
 
     // the local node
     if (!isset($cache_src[$host_ip])) {
         $ethernet = get_ethernet($host_ip);
+        if (empty($ethernet)) {
+            continue;
+        }
         $prefix   = substr($ethernet, 0, 8);
         $host     = gethostbyaddr($host_ip);
         $oui_name = $ether_map[$prefix]??'unknown';
@@ -796,30 +698,33 @@ while (true) {
             'iptxt' => $host_ip,
             '!ipbin' => "inet_ATON('$host_ip')"];
         $local_id = $local_fn($data);
-        echo " - create local node: $local_id - $host_ip, $ethernet, $oui_name, $host\n";
         $cache_src[$host_ip] = new local($local_id, $host, $host_ip, $ethernet, $oui_name);
     }
     $local_node = $cache_src[$host_ip]??NULL;
-    ASSERT($local_node instanceOf local, "Internal error: local node not created.");
+    ASSERT($local_node instanceOf local, "ERR: Internal Error: local node not created.");
 
 
     // the remote domain
-    // TODO: need to pull malware state from dump_to_db
     if (!isset($cache_dst[$domain_name])) {
         $domain = dump_to_db($domain_fn, $registrar_fn, $config, $host_name);
         if ($domain->id < 1) {
-            echo " !! Error dumping domain to db: [$host_name]\n";
+            echo "ERR: dumping domain to db: [$host_name]\n";
+            print_r($db->errors);
+            $db->errors = [];
         }
         $cache_dst[$domain_name] = $domain;
     }
     $domain = $cache_dst[$domain_name];
-    echo " + Load domain: $domain\n";
-    ASSERT($domain instanceOf domain, "Internal error: domain node not created.");
+    ASSERT($domain instanceOf domain, "ERR: Internal error: domain node not created.");
 
 
     // the remote host
     if (!isset($cache_dst["HOST:$host_name"])) {
         $remote_ip = gethostbyname($host_name);
+        if (!preg_match("/^\d+\.\d+\.\d+\.\d+$/", $remote_ip)) {
+            echo " - NOT IPv4 - $remote_ip\n";
+            continue;
+        }
         $who = find_whois($remote_ip);
         $reverse_name = gethostbyaddr($remote_ip);
         $data = [
@@ -832,46 +737,47 @@ while (true) {
             'malware' => $domain->flags];
         $host_id = $host_fn($data);
         if ($host_id < 0) {
+            echo "ERR: unable to create host\n";
+            print_r($data);
             print_r($db->errors);
+            $db->errors = [];
         }
         echo " - create remote host: $host_id - $host_ip, $host_name, {$who->org}\n";
         $cache_dst["HOST:$host_name"] = $host_id;
     }
     $remote_node_id = $cache_dst["HOST:$host_name"]??NULL;
-    echo " + Load node: $local_node\n";
-    ASSERT($remote_node_id > 0, "Internal error: remote node not created.");
-
+    ASSERT($remote_node_id > 0, "ERR: Internal error: remote node not created.");
 
 
     // the edge
     $edge_key = "$host:$domain:443";
     if (!isset($cache_edge[$edge_key]) || ($cache_edge[$edge_key]->last->getTimeStamp() + 300) < time()) {
 
+        $empty_bits = str_pad("\0", 253, "\0");
         $now = new DateTime('now');
-        $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND host_id = {remote_id} AND dst_port = 443", ['local_id' => $local_node->id, 'remote_id' => $remote_node_id]);
         $curr_bucket = get_bucket_index($now);
-        echo " !- load edge [$curr_bucket]\n";
-        // print_r($domain_sql);
+        echo "EDGE- {$local_node->id}->{$remote_node_id} @$curr_bucket\n";
+        $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND host_id = {remote_id} AND dst_port = 443", ['local_id' => $local_node->id, 'remote_id' => $remote_node_id]);
         if ($domain_sql->count() <= 0) {
-            $histogram = str_pad("\0", 253, "\0");
-            $histogram .= "\1";
-            $histogram = setBit($histogram, $curr_bucket);
+            $histogram = setBit($empty_bits, $curr_bucket);
             $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443, 'histogram' => $histogram, '!first' => 'now()', '!last' => 'now()']);
+            echo "STMT: $db->last_stmt\n";
             echo " !- create insert edge: $edge_id ($histogram)\n";
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, $now, $now);
         } else {
+            //$last_time   = $domain_sql->col('last')->new('DateTime');
             $last_bucket = get_bucket_index(new DateTime($domain_sql->col('last')()));
             $bits = $domain_sql->col('histogram')();
             if (empty($bits)) {
-                $bits = str_pad("\0", 253, "\0");
-                $bits .= "\1";
+                $bits = $empty_bits;
             }
-            echo " =-= $last_bucket, $curr_bucket\n";
+            echo " =-= {$domain_sql->col('last')()} $last_bucket, $curr_bucket\n";
             $bits = clearRange($bits, $last_bucket + 1, $curr_bucket - 1);
             $histogram = setBit($bits, $curr_bucket);
             $edge_id = $db->update("remote_edge", ['histogram' => $histogram, '!last' => 'now()'], ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443]);
             if ($edge_id < 1) {
                 print_r($db->errors);
+                $db->errors = [];
             }
             echo " -! update edge_id: $edge_id lid:$local_id, rid:$remote_node_id ($histogram)\n";
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, new DateTime($domain_sql->col('last')()), $now);
