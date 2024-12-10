@@ -1,6 +1,15 @@
 <?php
 
+/**
+ * NOTES: need to update phishing from hosting domains and link shortener domains, etc
+ */
+
 use ThreadFin\DB\DB;
+
+ini_set('zend.assertions', '1');
+ini_set('assert.active', '1');
+ini_set('assert.warning', '1');
+ini_set('assert.exception', '1');
 
 require "threadfin/core.php";
 require "threadfin/db.php";
@@ -105,8 +114,6 @@ function get_ethernet(string $ipAddress): ?string {
     // Execute the 'arp' command
     $output = shell_exec("ip neigh show $ipAddress 2>/dev/null");
 
-    echo "GET IP ETHER $ipAddress = " . $output . "\n";
-
     // Check if output contains a valid MAC address
     if (preg_match('/(?:[0-9a-f]{2}:){5}[0-9a-f]{2}/i', $output, $matches)) {
         return strtoupper($matches[0]); // Return the MAC address
@@ -120,8 +127,9 @@ function get_ethernet(string $ipAddress): ?string {
 function file_keys(string $filename) : array {
     $result = [];
     $x = fopen($filename, "r");
+    $ctr = 1;
     while ($line = fgets($x)) {
-        $result[trim($line)] = 1;
+        $result[trim($line)] = $ctr++;
     }
     return $result;
 }
@@ -500,7 +508,7 @@ function is_abuseip(string $ip) : bool {
 /**
  * return true if domain is in majestic million list, will reload the malware/majestic_domain.txt list every 30 minutes
  */
-function is_majestic(string $domain) : bool {
+function is_majestic(string $domain) : int {
     static $list = NULL; 
     static $age = -1; 
     // reload the majestic million data every hour
@@ -509,7 +517,7 @@ function is_majestic(string $domain) : bool {
         $age = time();
         gc_collect_cycles();
     }
-    return isset($list[$domain]);
+    return isset($list[$domain]) ? $list[$domain] : 0;
 }
 
 /**
@@ -568,6 +576,7 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     $txt      = get_txt_records($domain);
     $dkim     = get_txt_records("_dkim.$domain");
     $flags    = 0;
+    $rank     = is_majestic($domain);
 
 
     $has_google = (str_contains(join(", ", $txt), "google-site-verification")) ? true : false;
@@ -606,7 +615,7 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $flags += VAL_ABUSE_IP;
         $note .= "ABUSE,";
     }
-    if (is_majestic($ip)) {
+    if ($rank > 0) {
         $score -= 1.5;
         $flags += VAL_TOPMIL;
         $note .= "MAJ,";
@@ -626,14 +635,12 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $flags += VAL_WARNING;
         $note .= "WARN,";
     } else {
-    
-        // don't mark spammy domains as phishing....
-        if (is_phish($domain)) {
+        // is this unknown domain phishing?
+        if (is_phish($host) || is_phish($domain)) {
             $score += 12.0;
             $flags += VAL_PHISH;
             $note .= "PHISH,";
         }
-
         // unknown ... check alien vault
         else if (strlen($config['alien_api']) > 20) {
             // get malware details from alienware
@@ -652,6 +659,10 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
                     echo "alien pulse count: $domain ($count)\n";
                     if ($count > 0) {
                         if (isset($alien['validation']) && count($alien['validation']) > 0) {
+                            $score = 1.0;
+                            $flags += VAL_WHITELIST;
+                            $note .= "AWHIT,";
+                            /*
                             foreach ($alien['validation'] as $validate) {
                                 if (isset($validate['source']) && $validate['source'] == 'whitelist') {
                                     echo " ~~~~~ alien whitelist\n";
@@ -660,7 +671,10 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
                                     $note .= "AWHIT,";
                                     break;
                                 }
+                                if (isset($validate['source']) && $validate['source'] == 'akami') {
+                                }
                             }
+                            */
                         }
                         // map alien vault scor0e
                         // TODO: filter out pulses that are tracking or whitelist...
@@ -676,9 +690,8 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     }
 
     $reg_id = $registrar_fn([NULL, $who->registrar]);
-    $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags, $note]);
-    echo " - ID: $domain_id - insert domain ($reg_id) : {$domain} {$parts[$len-1]}, {$who->created}, {$who->expires}, {$who->registrar}, $score, {$flags} \n";
-    echo " ----- $domain_id ($domain} {$who->expires} [$note]\n";
+    $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags, $note, $rank]);
+    echo " ----- DOMAIN_ID: $domain_id ($domain} {$who->expires} [$note]\n";
     $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $flags);
     return $domain;
 }
@@ -769,7 +782,6 @@ while (true) {
         $ethernet = get_ethernet($host_ip);
         $prefix   = substr($ethernet, 0, 8);
         $host     = gethostbyaddr($host_ip);
-        echo "lookup [$prefix]\n";
         $oui_name = $ether_map[$prefix]??'unknown';
         $data = [
             'id' => NULL,
@@ -783,14 +795,17 @@ while (true) {
         $cache_src[$host_ip] = new local($local_id, $host, $host_ip, $ethernet, $oui_name);
     }
     $local_node = $cache_src[$host_ip]??NULL;
-    echo " + Load node: $local_node\n";
     ASSERT($local_node instanceOf local, "Internal error: local node not created.");
 
 
     // the remote domain
     // TODO: need to pull malware state from dump_to_db
     if (!isset($cache_dst[$domain_name])) {
-        $cache_dst[$domain_name] = dump_to_db($domain_fn, $registrar_fn, $config, $host_name);
+        $domain = dump_to_db($domain_fn, $registrar_fn, $config, $host_name);
+        if ($domain->id < 1) {
+            echo " !! Error dumping domain to db: [$host_name]\n";
+        }
+        $cache_dst[$domain_name] = $domain;
     }
     $domain = $cache_dst[$domain_name];
     echo " + Load domain: $domain\n";
@@ -811,6 +826,9 @@ while (true) {
             'domain_id' => $domain->id,
             'malware' => $domain->flags];
         $host_id = $host_fn($data);
+        if ($host_id < 0) {
+            print_r($db->errors);
+        }
         echo " - create remote host: $host_id - $host_ip, $host_name, {$who->org}\n";
         $cache_dst["HOST:$host_name"] = $host_id;
     }
@@ -847,6 +865,9 @@ while (true) {
             $bits = clearRange($bits, $last_bucket + 1, $curr_bucket - 1);
             $histogram = setBit($bits, $curr_bucket);
             $edge_id = $db->update("remote_edge", ['histogram' => $histogram], ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port', 443]);
+            if ($edge_id < 1) {
+                print_r($db->errors);
+            }
             echo " -! update edge_id: $edge_id lid:$local_id, rid:$remote_node_id ($histogram)\n";
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, new DateTime($domain_sql->col('last')()), $now);
         }
