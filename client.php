@@ -299,15 +299,15 @@ function find_whois(string $remote_ip, bool $return_raw = false): Whois_Info
         $info->city = $matches[1];
     }
     // created date
-    if (preg_match("/creat[^:]*:\s*(.*)/i", $x(), $matches)) {
+    if (preg_match("/creat[^:\]]*:\s*(.*)/i", $x(), $matches)) {
         $info->created = date_to_sql_date($matches[1]);
     }
     // expired date
-    if (preg_match("/expir[^:]*:\s*(.*)/i", $x(), $matches)) {
+    if (preg_match("/expir[^:\]]*:\s*(.*)/i", $x(), $matches)) {
         $info->expires = date_to_sql_date($matches[1]);
     }
     // updated date
-    if (preg_match("/update[^:]*:\s*(.*)/i", $x(), $matches)) {
+    if (preg_match("/update[^:\]]*:\s*(.*)/i", $x(), $matches)) {
         $info->updated = date_to_sql_date($matches[1]);
     }
     // registrar date
@@ -340,7 +340,7 @@ function find_whois(string $remote_ip, bool $return_raw = false): Whois_Info
     }
 
     // pull the org name from likely places
-    if (preg_match("/(org|descr|owner|netname)[^:]*:+\s*(.*)/i", $x(), $matches)) {
+    if (preg_match("/(org|descr|owner|netname|registrant)[^:\]]*:+\s*(.*)/i", $x(), $matches)) {
         $info->org .= $matches[1] . " ";
     }
     // pull all email addresses
@@ -455,6 +455,20 @@ function is_tracking(string $host) : bool {
     return isset($list[$host]);
 }
 
+/**
+ * return true if host is a tracking host
+ */
+function is_hosting(string $host) : bool {
+    static $list = NULL; 
+    static $age = -1; 
+    if ($list == NULL or $age < time() - 86400*2) {
+        $list = file_keys("malware/hosting_domains.txt");
+        $age = time();
+        gc_collect_cycles();
+    }
+    return isset($list[$host]);
+}
+
 
 /**
  * TODO: need to move this to host info...
@@ -520,21 +534,6 @@ function is_majestic(string $domain) : int {
     return isset($list[$domain]) ? $list[$domain] : 0;
 }
 
-/**
- * return true if domain is a public hosting domain, will reload the malware/hosting_domains.txt list every 96 hours
- */
-function is_hosting(string $domain) : bool {
-    static $list = NULL; 
-    static $age = -1; 
-    // reload the majestic million data every hour
-    if ($list == NULL or $age < time() - (3600*96)) {
-        $list = file_keys("malware/hosting_domains.txt");
-        $age = time();
-        gc_collect_cycles();
-    }
-    return isset($list[$domain]);
-}
-
 
 
 /**
@@ -568,6 +567,7 @@ function map_weighted_value($input) {
  * @param callable $domain_fn function to write domain to database
  */
 function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, string $host) : domain {
+    echo " @@ dump domain: $host\n";
     $domain   = get_domain($host);
     $ip       = gethostbyname($domain);
     $who      = find_whois($domain);
@@ -577,6 +577,7 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     $dkim     = get_txt_records("_dkim.$domain");
     $flags    = 0;
     $rank     = is_majestic($domain);
+    echo "  @+ dump domain: $domain, $ip, ($rank)\n";
 
 
     $has_google = (str_contains(join(", ", $txt), "google-site-verification")) ? true : false;
@@ -631,10 +632,16 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
         $note .= "TRK,";
     } // spammy domains
     else if (is_warning($domain) || is_warning($host)) {
-        $score += 2.3;
+        $score += 3.3;
         $flags += VAL_WARNING;
         $note .= "WARN,";
-    } else {
+    }
+    else if (is_hosting($domain)) {
+        $score += 2.1;
+        $flags += VAL_HOSTING;
+        $note .= "CDN,";
+    }
+     else {
         // is this unknown domain phishing?
         if (is_phish($host) || is_phish($domain)) {
             $score += 12.0;
@@ -728,8 +735,6 @@ $recv_fn = function($queue) {
         echo "message decode failed\n";
         return;
     }
-
-    echo "recieved message: [$message]\n";
 
     return $msg;
 };
@@ -864,7 +869,7 @@ while (true) {
             echo " =-= $last_bucket, $curr_bucket\n";
             $bits = clearRange($bits, $last_bucket + 1, $curr_bucket - 1);
             $histogram = setBit($bits, $curr_bucket);
-            $edge_id = $db->update("remote_edge", ['histogram' => $histogram], ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port', 443]);
+            $edge_id = $db->update("remote_edge", ['histogram' => $histogram, '!last' => 'now()'], ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443]);
             if ($edge_id < 1) {
                 print_r($db->errors);
             }
