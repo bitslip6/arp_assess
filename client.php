@@ -659,6 +659,8 @@ $domain_fn    = $db->upsert_fn("domain");
 $registrar_fn = $db->upsert_fn("registrar");
 $local_fn     = $db->upsert_fn("locals");
 $host_fn      = $db->upsert_fn("host");
+$r_edge_fn    = $db->upsert_fn("remote_edge");
+
 echo "~ DB functions created\n";
 
 echo "# Loading OUI Data...\n";
@@ -760,12 +762,11 @@ while (true) {
         $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND host_id = {remote_id} AND dst_port = 443", ['local_id' => $local_node->id, 'remote_id' => $remote_node_id]);
         if ($domain_sql->count() <= 0) {
             $histogram = setBit($empty_bits, $curr_bucket);
-            $edge_id = $db->insert('remote_edge', ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443, 'histogram' => $histogram, '!first' => 'now()', '!last' => 'now()']);
+            $edge_id = $r_edge_fn(['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443, 'histogram' => $histogram, '!first' => 'now()', '!last' => 'now()']);
             echo "STMT: $db->last_stmt\n";
             echo " !- create insert edge: $edge_id ($histogram)\n";
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, $now, $now);
         } else {
-            //$last_time   = $domain_sql->col('last')->new('DateTime');
             $last_bucket = get_bucket_index(new DateTime($domain_sql->col('last')()));
             $bits = $domain_sql->col('histogram')();
             if (empty($bits)) {
