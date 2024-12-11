@@ -98,7 +98,7 @@ class domain {
     ) {}
 
     public static function from_sql(SQL $result) : domain {
-        $x = $result->_x;
+        $x = $result->as_array();
         $domain = new domain(
             $x['id'],
             $x['domain'],
@@ -646,6 +646,8 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
 
     $note     .= $net_data['data']['category']['tag'] ?? 'UNKN';
     $reg_id    = $registrar_fn([NULL, $who->registrar]);
+    if (empty($who->created)) { $who->created = NULL; }
+    if (empty($who->expires)) { $who->expires = NULL; }
     $domain_id = $domain_fn([NULL, $domain, $parts[$len-1], $who->created, $who->expires, $reg_id, $score, $flags, $note, $rank, $cat_id]);
     echo "    @@ DOMAIN_ID: $domain_id ($domain} {$who->expires} [$note]\n";
     $domain = new domain($domain_id, $domain, new DateTime($who->created), new DateTime($who->expires), $who->registrar, $score, $flags, $cat_id);
@@ -701,7 +703,6 @@ while (true) {
     $domain_name = get_domain($host_name);
     $host_ip     = $message['src'];
 	if (str_ends_with($host_name, "in-addr.arpa")) {
-        echo "Reverse ADDR lookup skip: [$host_name]\n";
 		continue;
     }
 
@@ -752,7 +753,7 @@ while (true) {
     if (!isset($cache_dst["HOST:$host_name"])) {
         $remote_ip = gethostbyname($host_name);
         if (!preg_match("/^\d+\.\d+\.\d+\.\d+$/", $remote_ip)) {
-            echo " - NOT IPv4 - $remote_ip\n";
+            echo " - NOT IPv4 - $host_name -> $remote_ip\n";
             continue;
         }
         $who = find_whois($remote_ip);
@@ -780,7 +781,7 @@ while (true) {
 
 
     // the edge
-    $edge_key = "$host:$domain:443";
+    $edge_key = "$host_ip:$remote_note_id:443";
     if (!isset($cache_edge[$edge_key]) || ($cache_edge[$edge_key]->last->getTimeStamp() + 300) < time()) {
 
         $now = new DateTime('now');
