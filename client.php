@@ -142,8 +142,8 @@ class Whois_Info {
     public string $cidr = "";
     public string $net = "";
     public string $raw = "";
-    public string $created = "";
-    public string $expires = "";
+    public ?string $created = null;
+    public ?string $expires = null;
     public string $updated = "";
     public string $registrar = "";
     public bool $cloudflare = false;
