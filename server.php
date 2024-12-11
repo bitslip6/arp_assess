@@ -93,6 +93,10 @@ function parse_line($line) : MaybeO {
 
     $src = $parts[7];
     $host = $parts[5];
+    if (str_ends_with($host, "in-addr.arpa")) {
+        return MaybeO::of(NULL);
+    }
+
     return MaybeO::of(new Edge($src, $host, time()));
 }
 
