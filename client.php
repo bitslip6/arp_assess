@@ -726,6 +726,7 @@ while (true) {
         $cache_src[$host_ip] = new local($local_id, $host, $host_ip, $ethernet, $oui_name);
     }
     $local_node = $cache_src[$host_ip]??NULL;
+	$local_id = $local_node->id;
     ASSERT($local_node instanceOf local, "ERR: Internal Error: local node not created.");
 
 
@@ -781,13 +782,15 @@ while (true) {
 
 
     // the edge
-    $edge_key = "$host_ip:$remote_note_id:443";
+    $edge_key = "$host_ip:$remote_node_id:443";
     if (!isset($cache_edge[$edge_key]) || ($cache_edge[$edge_key]->last->getTimeStamp() + 300) < time()) {
 
         $now = new DateTime('now');
         $curr_bucket = get_bucket_index($now);
-        echo "EDGE- {$local_node->id}->{$remote_node_id} @$curr_bucket\n";
+        echo "EDGE- ($edge_key) - {$local_node->id}->{$remote_node_id} @$curr_bucket\n";
         $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND host_id = {remote_id} AND dst_port = 443", ['local_id' => $local_node->id, 'remote_id' => $remote_node_id]);
+		echo "[{$db->last_stmt}]\n";
+
         if ($domain_sql->count() <= 0) {
             $histogram = setBit($empty_bits, $curr_bucket);
             $success = $db->insert("remote_edge", ['histogram' => $histogram, 'local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443], DB_FETCH_SUCCESS);
@@ -810,7 +813,9 @@ while (true) {
             if ($num_rows < 1) {
                 print_r($db->errors);
                 $db->errors = [];
-            }
+            } else {
+				echo " **** EDGE UP {$local_id} -> {$remote_node_id}:443\n";
+			}
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, new DateTime($domain_sql->col('last')()), $now);
         }
         $cache_edge[$edge_key] = $edge;
