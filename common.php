@@ -83,16 +83,26 @@ function clearRange(string $bits, int $start, int $end): string {
  * get the ethernet address associated with an ip address
  */
 function get_ethernet(string $ip_address): ?string {
+	static $map = [];
+	// return cached ethernet address...
+	if (isset($map[$ip_address])) {
+		$parts = explode(".", $map[$ip_address]);
+		if ($parts[1] > time() - 3600) {
+			return $parts[0];
+		}
+	}
     // Execute the 'arp' command
     $output = shell_exec("ip neigh show $ip_address 2>/dev/null");
 
+	$ether = "";
     // Check if output contains a valid MAC address
     if (preg_match('/(?:[0-9a-f]{2}:){5}[0-9a-f]{2}/i', $output, $matches)) {
-        return strtoupper($matches[0]); // Return the MAC address
+		$ether = strtoupper($matches[0]);
+		$map[$ip_address] = $ether . "." . time();
+		return $ether;
     }
-    echo "## ERR: [$output]\n";
-
-    return null; // MAC address not found
+	$map[$ip_address] .= "." . time();
+    return null;
 }
 
 
