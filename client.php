@@ -4,6 +4,16 @@
  * NOTES: need to update phishing from hosting domains and link shortener domains, etc
  * 
  * select h.hostname, inet_ntoa(h.ip4), h.malware, l.iptxt, l.hostname, l.ether_type, e.first, e.last, d.score, d.note, r.registrar from host as h join remote_edge as e on e.host_id = h.id join locals as l on e.local_id = l.id join domain as d on h.domain_id = d.id join registrar as r on d.registrar = r.id where (h.malware & 1<<6) > 0 or (d.malware & 1<<6) > 0;
+ * 
+ * todo: web interface, FFT beaconing detection, dns twist detection,
+ * detect beaconing to multiple domains with the same registrar
+ * detect beaconing to multiple domains registered in the last year
+ * block NULL dns requests
+ * check TXT dns requests
+ * check SVR dns requests
+ * block DNS to the internet except from authorized hosts
+ * 
+ * 
  */
 
 use ThreadFin\DB\DB;
@@ -17,6 +27,20 @@ require "threadfin/core.php";
 require "threadfin/db.php";
 require "threadfin/http.php";
 require "common.php";
+
+const DISABLED_MITRE = [
+'T1012',
+'T1018',
+'T1053',
+'T1593',
+'T1596',
+'T1594',
+'T1518',
+'T1106',
+'T1071'
+];
+
+const ALIEN_MAX_DAYS = 90;
 
 use \ThreadFin\Core\MaybeStr as MaybeStr;
 use \ThreadFin\Core\MaybeO as MaybeO;
@@ -157,23 +181,6 @@ class Whois_Info {
     }
 }
 
-
-/**
- * Get the bucket index (0-287) corresponding to a given DateTime.
- *
- * @param DateTime $dt The date-time object.
- * @return int Bucket index (0 to 2009). - return 2010 if $dt was null
- */
-function get_bucket_index(?DateTime $dt): int {
-    if ($dt == null) {
-        return 2010;
-    }
-    $seconds_since_midnight = ($dt->format('H') * 3600) + ($dt->format('i') * 60) + $dt->format('s');
-    $day_offset = $dt->format('w') * 36;
-    $result = intdiv($day_offset + $seconds_since_midnight, 300); // 300s = 5min
-    ASSERT($result >= 0 && $result <= 2009, "ERR: edge bucket calculation incorrect, got [$result]");
-    return $result;
-}
 
 
 /**
@@ -389,13 +396,17 @@ function is_phish(string $domain) : bool {
 /**
  * return true if host is a tracking host
  */
-function is_tracking(string $host) : bool {
+function is_tracking(string $host, bool $append = false) : bool {
     static $list = NULL; 
     static $age = -1; 
-    if ($list == NULL or $age < time() - 86400*2) {
+    if ($list == NULL or $age < time() - 86400) {
         $list = file_keys("malware/tracking.txt");
         $age = time();
         gc_collect_cycles();
+    }
+    if ($append) {
+        $list[$host] = count($list) + 1;
+        file_put_contents("malware/tracking.txt", join("\n", array_keys($list)), LOCK_EX);
     }
     return isset($list[$host]);
 }
@@ -484,7 +495,7 @@ function is_majestic(string $domain) : int {
 /**
  * map an alient vault ioc count number to an arp_asses score
  */
-function map_weighted_value($input) {
+function alien_count_to_score($input) {
     // Ensure input is within the valid range
     if ($input < 0 || $input > 30000) {
         throw new InvalidArgumentException("Input must be between 0 and 30000.");
@@ -493,8 +504,8 @@ function map_weighted_value($input) {
     $input = max($input, 30);
 
     // Parameters for the scaling
-    $max_input = 30;  // Maximum input value
-    $max_output = 14; // Maximum output value
+    $max_input = 20;  // Maximum input value
+    $max_output = 5; // Maximum output value
     $scale_factor = 0.5; // Factor < 1 gives more weight to lower numbers
 
     // Apply complementary power scaling for the weighted mapping
@@ -525,7 +536,7 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
     echo "    @@ dump domain: $domain, $ip, ($rank)\n";
     $raw_net  = cache_http("net_cache", (86400*30), "GET", "https://informatics.netify.ai/api/v2/lookup/domains/$domain");
     $net_data = json_decode($raw_net, true);
-    $cat_id   = $net_data['data']['category']['id'] ?? 254;
+    $cat_id   = get_category_id('netify', $net_data['data']['category']['label'] ?? 254, 0);
     
 
 
@@ -598,45 +609,99 @@ function dump_to_db(callable $domain_fn, callable $registrar_fn, array $config, 
             $note .= "PHISH,";
         }
         // unknown ... check alien vault
-        else if (strlen($config['alien_api']) > 20) {
-            // get malware details from alienware
-            // echo "alien vault search $domain\n";
-            $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
-            $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
-            $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
-            if (strlen($content) > 10) {
-                $alien = json_decode($content, true);
-                if ($alien == false) {
-                    echo ("\n\nERROR DECODING ALIEN VAULT DATA! ($domain) resp len:" . strlen($content) . "\n");
-                }
-                if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
-                    $count = intval($alien['pulse_info']['count']);
-                    echo "    @@ alien pulse count: $domain ($count)\n";
-                    if ($count > 0) {
-                        if (isset($alien['validation']) && count($alien['validation']) > 0) {
-                            $score = 1.0;
-                            $flags += VAL_WHITELIST;
-                            $note .= "AWHIT,";
-                            /*
-                            foreach ($alien['validation'] as $validate) {
-                                if (isset($validate['source']) && $validate['source'] == 'whitelist') {
-                                    echo " ~~~~~ alien whitelist\n";
-                                    $score = 1.0;
-                                    $flags += VAL_WHITELIST;
-                                    $note .= "AWHIT,";
-                                    break;
-                                }
-                                if (isset($validate['source']) && $validate['source'] == 'akami') {
+        else {
+            if (strlen($config['alien_api']) > 20) {
+                // get malware details from alienware
+                // echo "alien vault search $domain\n";
+                $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
+                $url = "https://otx.alienvault.com/api/v1/indicators/domain/$domain/general";
+                $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
+                if (strlen($content) > 10) {
+                    $alien = json_decode($content, true);
+                    if ($alien == false) {
+                        echo ("\n\nERROR DECODING ALIEN VAULT DATA! ($domain) resp len:" . strlen($content) . "\n");
+                    }
+                    if (isset($alien['pulse_info']) && $alien['pulse_info']['count'] > 0) {
+                        // filter out to just pulses updated in the last 4 months
+                        /*
+                        $active_pulses = array_filter($alien['pulse_info']['pulses'], function ($x) {
+                            $parts = explode(".", $x['modified']);
+                            $mod = strtotime($parts[0]);
+                            $active = $mod > (time() - (86400 * 120));
+                            if ($active) {
+                                // active and with attack ids...
+                                $attacks = array_filter($x['attack_ids'], 'alien_attack_id_filter');
+                                return count($attacks) > 0;
+                            }
+                            return false;
+                        });
+                        */
+                        $pulse_score = array_reduce($alien['pulse_info']['pulses'], function ($carry, $pulse) {
+                            $attacks = array_filter($pulse['attack_ids'], 'alien_attack_id_filter');
+                            if (count($attacks) > 0) {
+                                $created = DateTime::createFromFormat("Y-m-d\TH:i:s.u", $pulse['created']);
+                                if ($created) {
+                                    $age = ALIEN_MAX_DAYS - ((time() - $created->getTimestamp()) / 86400);
+                                    $age = max($age, 0);
+                                    $attack_score = $carry + pow(($age / ALIEN_MAX_DAYS), 0.8) * 3;
+                                    echo " **** Attack age: $age - $attack_score\n";
+                                    $carry += $attack_score;
                                 }
                             }
-                            */
+
+                            return $carry;
+
+                        }, 0);
+                        if (isset($alien['validation']) && count($alien['validation']) > 0) {
+                            $flags += VAL_WHITELIST;
+                            $note .= "AWHIT,";
                         }
-                        // map alien vault scor0e
-                        // TODO: filter out pulses that are tracking or whitelist...
-                        if (! ($flags & VAL_WHITELIST)) {
-                            $score += map_weighted_value($count);
+                        else if ($pulse_score > 0) {
+                            $score += alien_count_to_score($pulse_score);
                             $note .= "ALIEN,";
                             $flags += VAL_ALIEN;
+                        }
+                    }
+                }
+            }
+            if (strlen($config['virustotal_api']) > 20) {
+
+                $headers = ["X-OTX-API-KEY" => $config['alien_api'], 'user-agent' => "Mozilla/5.0 (PHP; Linux; ARM64) arp_assess/0.2 https://github.com/bitslip6/arp_assess"];
+                $url = "https://www.virustotal.com/api/v3/domains/$domain";
+                $content = cache_http("cache", (3600*2), "GET", $url, [], $headers);
+                if (strlen($content) > 10) {
+                    $vt = json_decode($content, true);
+                    if ($vt == false || !isset($vt['data']['attributes'])) {
+                        echo "\n\nERROR DECODING VIRUS TOTAL DATA! ($domain) resp len:" . strlen($content) . "\n";
+                    }
+                    else {
+                        echo " ++ add virus total data for [$domain]\n";
+                        $attr = $vt['data']['attributes'];
+
+                        // pull category from virus total
+                        if (isset($attr['categories'])) {
+                            $cat_id = 0;
+                            foreach ($attr['categories'] as $source => $value) {
+                                $cat_id = get_category_id($source, $value, $cat_id);
+                            }
+                        }
+
+                        // calculate a domain score based on intelligence feeds
+                        if (isset($attr['last_analysis_stats'])) {
+                            $score += alien_count_to_score($attr['last_analsis_stats']['malicious']);
+                            $score += alien_count_to_score($attr['last_analsis_stats']['suspicious']) / 3;
+                            $score -= alien_count_to_score($attr['last_analsis_stats']['harmless']) / 10;
+                        }
+
+                        // calculate a domain score based on human votes
+                        if (isset($attr['total_votes'])) {
+                            $score += alien_count_to_score($attr['total_votes']['malicious']);
+                            $score -= alien_count_to_score($attr['total_votes']['harmless']);
+
+                            // note this domain as a tracking domain...
+                            if ($attr['total_votes']['harmless'] > 32 && $attr['total_votes']['malicious'] < 2) {
+                                is_tracking($domain, true);
+                            }
                         }
                     }
                 }
@@ -726,7 +791,7 @@ while (true) {
         $cache_src[$host_ip] = new local($local_id, $host, $host_ip, $ethernet, $oui_name);
     }
     $local_node = $cache_src[$host_ip]??NULL;
-	$local_id = $local_node->id;
+    $local_id = $local_node->id;
     ASSERT($local_node instanceOf local, "ERR: Internal Error: local node not created.");
 
 
@@ -787,9 +852,8 @@ while (true) {
 
         $now = new DateTime('now');
         $curr_bucket = get_bucket_index($now);
-        echo "EDGE- ($edge_key) - {$local_node->id}->{$remote_node_id} @$curr_bucket\n";
-        $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND host_id = {remote_id} AND dst_port = 443", ['local_id' => $local_node->id, 'remote_id' => $remote_node_id]);
-		echo "[{$db->last_stmt}]\n";
+        echo "EDGE- {$local_node->id}->{$remote_node_id} @$curr_bucket\n";
+        $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND host_id = {host_id} AND dst_port = 443", ['local_id' => $local_node->id, 'host_id' => $remote_node_id]);
 
         if ($domain_sql->count() <= 0) {
             $histogram = setBit($empty_bits, $curr_bucket);
