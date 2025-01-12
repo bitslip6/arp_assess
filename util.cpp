@@ -190,12 +190,13 @@ json convertGraphToJSON(const std::unordered_map<Node, std::unordered_set<Edge, 
                 nodes.push_back({
                     {"caption", targetDomain},
                     {"type", type},
+                    {"root", 1},
                     {"id", targetID}
                 });
             }
             
             // Add edge with additional edge attributes if needed
-	    time_t diff = edge.l_time - now;
+	    time_t diff = now - edge.l_time;
 	    // only show last hour of dns lookups
 	    if (diff < 3600) {
 		    char buff[250];
