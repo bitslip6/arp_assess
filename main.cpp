@@ -28,8 +28,8 @@ std::unordered_set<std::string> million;
 // Function to parse a single dnsmasq log line
 std::optional<Edge> parseLogLine(const std::string &line) {
     auto tokens = split(line, ' ');
-    // std::cout << "sz: " << tokens.size() << ", 4: " << tokens[4] << ", 5: " << tokens[5] << std::endl;
-    if (tokens.size() < 8 ||  tokens[4] != "query[A]") {
+    // if the line does not have at least 8 tokens or the 5th token does not contain "query[", return nullopt
+    if (tokens.size() < 8 || (tokens[4].find("query[")) == std::string::npos) {
         return std::nullopt;
     }
 
