@@ -322,11 +322,13 @@ function get_txt_records($domain) {
 
     // Extract the TXT entries
     $txtRecords = [];
-    foreach ($records as $record) {
-        if (isset($record['txt'])) {
-            $txtRecords[] = $record['txt'];
-        }
-    }
+	if (is_array($record)) {
+		foreach ($records as $record) {
+			if (isset($record['txt'])) {
+				$txtRecords[] = $record['txt'];
+			}
+		}
+	}
 
     return $txtRecords;
 }
@@ -847,18 +849,17 @@ while (true) {
 
 
     // the edge
-    $edge_key = "$host_ip:$remote_note_id:443";
+    $edge_key = "$host_ip:$remote_node_id:443";
     if (!isset($cache_edge[$edge_key]) || ($cache_edge[$edge_key]->last->getTimeStamp() + 300) < time()) {
 
         $now = new DateTime('now');
         $curr_bucket = get_bucket_index($now);
         echo "EDGE- {$local_node->id}->{$remote_node_id} @$curr_bucket\n";
-        $domain_sql = $db->fetch("SELECT histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND host_id = {host_id} AND dst_port = 443", ['local_id' => $local_node->id, 'host_id' => $remote_node_id]);
-        echo $db->last_stmt . "\n";
+        $domain_sql = $db->fetch("SELECT HEX(`histogram`) as histogram, first, last FROM remote_edge WHERE local_id = {local_id} AND host_id = {host_id} AND dst_port = 443", ['local_id' => $local_node->id, 'host_id' => $remote_node_id]);
 
         if ($domain_sql->count() <= 0) {
             $histogram = setBit($empty_bits, $curr_bucket);
-            $success = $db->insert("remote_edge", ['histogram' => $histogram, 'local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443], DB_FETCH_SUCCESS);
+            $success = $db->insert("remote_edge", ['!histogram' => "UNHEX('".bin2hex($histogram)."')", 'local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443], DB_FETCH_SUCCESS);
             if (!$success) {
                 print_r($db->errors);
                 $db->errors = [];
@@ -866,19 +867,23 @@ while (true) {
             }
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, $now, $now);
         } else {
-            $last_bucket = get_bucket_index(new DateTime($domain_sql->col('last')()));
-            $bits = $domain_sql->col('histogram')();
+			$f = $domain_sql->as_array();
+            $last_bucket = get_bucket_index(new DateTime($f['last']));
+            $bits = $f['histogram'];
             if (empty($bits)) {
                 $bits = $empty_bits;
             }
-            echo " =-= {$domain_sql->col('last')()} $last_bucket, $curr_bucket\n";
+            echo " =-= {$f['last']} $last_bucket, $curr_bucket\n";
             $bits = clearRange($bits, $last_bucket + 1, $curr_bucket - 1);
-            $histogram = setBit($bits, $curr_bucket);
-            $num_rows = $db->update("remote_edge", ['histogram' => $histogram], ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443], DB_FETCH_NUM_ROWS);
+            $histogram = substr(setBit($bits, $curr_bucket), 0, 250);
+
+    		$num_rows = $db->update("remote_edge", ['!histogram' => "UNHEX('".bin2hex($histogram)."')"], ['local_id' => $local_id, 'host_id' => $remote_node_id, 'dst_port' => 443], DB_FETCH_NUM_ROWS);
             if ($num_rows < 1) {
                 print_r($db->errors);
                 $db->errors = [];
-            }
+            } else {
+				echo " **** EDGE UP {$local_id} -> {$remote_node_id}:443\n";
+			}
             $edge = new edge($local_node->id, $remote_node_id, 443, $histogram, new DateTime($domain_sql->col('last')()), $now);
         }
         $cache_edge[$edge_key] = $edge;
