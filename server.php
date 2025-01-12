@@ -13,7 +13,6 @@ use function \ThreadFin\Util\not as not;
 use function \ThreadFin\Core\partial_right as partial_right;
 use function \ThreadFin\Util\icontains as icontains;
 
-
 class Edge {
 
     public function __construct(
@@ -100,6 +99,45 @@ function parse_line($line) : MaybeO {
     return MaybeO::of(new Edge($src, $host, time()));
 }
 
+function tail_file($filePath, callable $fn) {
+    $fileHandle = fopen($filePath, "r");
+    if (!$fileHandle) {
+        die("Error: Unable to open file: $filePath\n");
+    }
+
+    fseek($fileHandle, 0, SEEK_END);
+
+    $lastPosition = ftell($fileHandle);
+
+    while (true) {
+        $readStreams = [$fileHandle];
+        $writeStreams = $exceptStreams = null;
+
+        // Wait for data to be available
+        if (stream_select($readStreams, $writeStreams, $exceptStreams, 1)) {
+            while (($line = fgets($fileHandle)) !== false) {
+                $fn($line);
+            }
+
+            $lastPosition = ftell($fileHandle);
+            //usleep(10000); // Sleep for 10ms
+
+        } else {
+            // Check for truncation
+            clearstatcache();
+            if (filesize($filePath) < $lastPosition) {
+                echo "File truncated, restarting...\n";
+                rewind($fileHandle);
+                $lastPosition = 0;
+            }
+            // nothing happening, avoid any possibility for busy loop
+            usleep(100000); // Sleep for 200ms
+        }
+    }
+
+    fclose($fileHandle);
+}
+
 $config = json_decode(file_get_contents("config.json"), true);
 panic_if(not(is_array($config)), "Unable to parse config.json, copy config.sample to config.json and configure settings.");
 
@@ -118,6 +156,7 @@ panic_if(not($db->connected()), "Unable to connect to db");
 
     
 
+/*
 // Ensure the pipe exists and is a named pipe
 if (!file_exists($config['dnsmasq_log'])) {
     echo "dnsmasq fifo does not exist " . $config['dnsmasq_log'] . "\n";
@@ -128,6 +167,7 @@ if (!file_exists($config['dnsmasq_log'])) {
 $pipe = fopen($config['dnsmasq_log'], 'r');
 panic_if(!$pipe, "Error: Unable to open named pipe {$config['dnsmasq_log']}.\n");
 echo "Listening for input on the named pipe: {$config['dnsmasq_log']}\n";
+*/
 
 //$queue = MaybeO::of(ftok($config['dnsmasq_log'], 'R'))->map('msg_get_queue');
 
@@ -152,6 +192,18 @@ $queue_send_fn = function(Edge $edge) use ($queue) {
         echo " EDGE SENT!\n";
     }
 };
+
+
+try {
+    tail_file($config['dnsmasq_log'], function (string $line) use ($queue_send_fn) {
+        parse_line(trim($line))
+            ->keep_if('not_azure')
+            ->effect($queue_send_fn);
+    });
+} catch(Exception $e) {
+    print_r($e);
+}
+die("complete\n");
 
 /*
 $host = "10.80.88.102";
