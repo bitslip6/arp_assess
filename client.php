@@ -322,7 +322,7 @@ function get_txt_records($domain) {
 
     // Extract the TXT entries
     $txtRecords = [];
-	if (is_array($record)) {
+	if (is_array($records)) {
 		foreach ($records as $record) {
 			if (isset($record['txt'])) {
 				$txtRecords[] = $record['txt'];
