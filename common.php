@@ -66,6 +66,15 @@ function setBit(string $bits, int $bucket): string {
     return $bits;
 }
 
+function checkBit($bits, int $bucket): bool {
+    $byteIndex = intdiv($bucket, 8);
+    $bitIndex = $bucket % 8;
+
+    
+    $byte = ord($bits[$byteIndex]);
+    return ($byte & (1 << $bitIndex));
+}
+
 /**
  * Unset a specific bit in a binary string.
  *
