@@ -1,6 +1,9 @@
 <?php
 
 define('MAX_BUCKETS', 2016); 
+
+/**
+ */
 enum NodeType: string {
     case Host = 'Host';
     case Domain = 'Domain';
@@ -8,12 +11,16 @@ enum NodeType: string {
     case File = 'File';
 }
 
+/**
+ */
 class Node {
     public int $id;
     public string $name;
     public NodeType $type;
 }
 
+/**
+ */
 class Process extends Node implements JsonSerializable {
     public int $pid;
     public string $arguments;
@@ -28,6 +35,8 @@ class Process extends Node implements JsonSerializable {
     }
 }
 
+/**
+ */
 class Connect extends Node implements JsonSerializable {
     public int $port;
     public int $proto;
@@ -42,6 +51,8 @@ class Connect extends Node implements JsonSerializable {
     }
 }
 
+/**
+ */
 class Host extends Node implements JsonSerializable {
     public string $ip;
     public string $mac = "0";
@@ -57,6 +68,8 @@ class Host extends Node implements JsonSerializable {
     }
 }
 
+/**
+ */
 class Edge implements JsonSerializable {
     public NodeType $srcType;
     public NodeType $dstType;
@@ -174,9 +187,12 @@ function handle_cef(string $content, string $remote_ip, $queue) : mixed {
     if ($fh === NULL) {
         $fh = get_file_handle($cef['sHost'], $cef['type'], true);
     }
-
-    // write the file to disk
-    fwrite($fh, $content . "\n");
+    if ($fh !== NULL) {
+        // write the file to disk
+        fwrite($fh, $content . "\n");
+    } else {
+        echo "ERROR: Unable to write to log file [{$cef['sHost']}]\n";
+    }
 
     data_store($cef, $remote_ip);
 
@@ -200,11 +216,17 @@ function get_minute() {
 }
 
 
-function data_store(array $cef, string $remote_ip) : mixed{
+function data_store(array $cef, string $remote_ip, bool $dump_nodes = false) : mixed {
     static $nodes = [];
     static $edges = [];
+
+    if ($dump_nodes) {
+        return [$nodes, $edges];
+    }
+
     if (!isset($cef['type'])) {
-        echo "DUMP!\n";
+        echo "DUMP! no CEF type\n";
+        print_r($cef);
         return [$nodes, $edges];
     }
 
@@ -213,8 +235,8 @@ function data_store(array $cef, string $remote_ip) : mixed{
 
 
 
-    if (isset($nodes[$cef['sHost']])) {
-        $src_node = $nodes[$cef['sHost']];
+    if (isset($nodes[$src_node_key])) {
+        $src_node = $nodes[$src_node_key];
     } else {
         $src_node = new Host();
         $src_node->name = $cef['sHost'];
@@ -223,7 +245,7 @@ function data_store(array $cef, string $remote_ip) : mixed{
         $src_node->id = count($nodes);
 
         echo "CREATE NODE: {$src_node->name}\n";
-        $nodes[$cef['sHost']] = $src_node;
+        $nodes[$src_node_key] = $src_node;
     }
     $edge_key .= $src_node->id . '-';
 
@@ -319,6 +341,7 @@ $server->set([
     'ssl_ciphers' => 'EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH',
     'ssl_protocols' => OpenSwoole\Constant::SSL_TLSv1_3 | OpenSwoole\Constant::SSL_TLSv1_2  | OpenSwoole\Constant::SSL_TLSv1_1,
     'ssl_verify_peer' => false,
+    'ssl_client_cert_file' => __DIR__ . '/certificates/client.crt',
 
 ]);
 
@@ -338,7 +361,12 @@ $server->on("Request", function (OpenSwoole\Http\Request $request, OpenSwoole\Ht
 
         $response->header("Content-Type", "text/plain");
         $response->end("OK\n");
-    } else {
+    } 
+    else if (isset($request->get['dump'])) {
+        $response->header("Content-Type", "text/javascript");
+        $response->end(json_encode(data_store([], $remote_ip, true), JSON_PRETTY_PRINT));
+    }
+    else {
         echo "DUMP\n";
         $response->header("Content-Type", "text/javascript");
         $f = data_store([], $remote_ip);
